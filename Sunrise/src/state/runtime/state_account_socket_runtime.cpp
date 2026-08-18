@@ -1,4 +1,4 @@
-﻿/** Socket-plug and item-state staging, which both mutate one character-owned item. */
+/** Socket-plug and item-state staging, which both mutate one character-owned item. */
 
 #include <Windows.h>
 
@@ -14,6 +14,7 @@
 #include "../../core/logging/log.h"
 #include "../../middleware/datagen/family4/loadout/loadout_resolver.h"
 #include "../build_data/runtime.h"
+#include "../build_data/items/socket_plugs/socket_plug_catalog.h"
 #include "runtime.h"
 #include "state.h"
 #include "state_account_transaction_helpers.h"
@@ -101,6 +102,7 @@ void report_socket_plug(std::string_view stage,
                                      std::uint64_t targetInstanceSoid,
                                      std::uint8_t socketLane,
                                      std::uint16_t plugDefinitionIndex,
+                                     bool unrestricted,
                                      PendingSocketPlug& mutation) noexcept {
     mutation = {};
     CharacterItemLocation location{};
@@ -153,8 +155,11 @@ void report_socket_plug(std::string_view stage,
         || !build_data::find_item_definition_index(plugDefinitionIndex, plugDefinition)
         || plugDefinition.definitionIndex != plugDefinitionIndex
         || plugDefinition.definitionHash == authored_inventory::kNoDefinitionHash
-        || !build_data::is_socket_plug_allowed(
-            targetDefinition.definitionIndex, socketLane, plugDefinitionIndex)) {
+        || (unrestricted
+            && !build_data::items::socket_plugs::contains(plugDefinitionIndex))
+        || (!unrestricted
+            && !build_data::is_socket_plug_allowed(
+                targetDefinition.definitionIndex, socketLane, plugDefinitionIndex))) {
         return fail("definition_or_compatibility");
     }
 
@@ -164,7 +169,8 @@ void report_socket_plug(std::string_view stage,
     // down, which is why the Client offers every valid one for a socket. Requiring a stack for
     // one would refuse a plug the account already has.
     const bool consumesStack =
-        build_data::is_profile_action_source(plugDefinitionIndex, plugDefinition.bucketId)
+        !unrestricted
+        && build_data::is_profile_action_source(plugDefinitionIndex, plugDefinition.bucketId)
         && build_data::is_consumed_on_apply(plugDefinitionIndex, plugDefinition.bucketId)
         && !(socketLane < detail.initialPlugIndices.size()
              && detail.initialPlugIndices[socketLane] == plugDefinitionIndex);
@@ -175,7 +181,9 @@ void report_socket_plug(std::string_view stage,
     AccountState chargedAccount = snapshot;
     build_data::material_requirements::Definition materialSet{};
     bool profileChanged = false;
-    const std::uint16_t materialSetIndex = plugDefinition.insertionMaterialRequirementSetIndex;
+    const std::uint16_t materialSetIndex =
+        unrestricted ? build_data::items::kUnavailableMaterialRequirementSetIndex
+                     : plugDefinition.insertionMaterialRequirementSetIndex;
     if (materialSetIndex != build_data::items::kUnavailableMaterialRequirementSetIndex
         && (!build_data::find_material_requirement_set(materialSetIndex, materialSet)
             || materialSet.requirementSetIndex != materialSetIndex
@@ -286,6 +294,7 @@ void report_socket_plug(std::string_view stage,
     mutation.materialRequirementCount = materialSet.requirementCount;
     mutation.profileChanged = profileChanged;
     mutation.targetEquipped = location.equipped;
+    mutation.unrestricted = unrestricted;
     mutation.prepared = true;
     return true;
 }

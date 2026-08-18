@@ -486,6 +486,7 @@
     <ClCompile Include="src\server\ui\runtime\server_ui_module_runtime.cpp" />
     <ClCompile Include="src\server\ui\activity_override\activity_override_panel.cpp" />
     <ClCompile Include="src\server\ui\activity_override\activity_override_lists.cpp" />
+    <ClCompile Include="src\server\ui\weapon_editor\weapon_editor_panel.cpp" />
     <ClCompile Include="src\server\transport\bap_listener.cpp" />
     <ClCompile Include="src\server\bap\bap_route.cpp" />
     <ClCompile Include="src\server\bap\plaintext.cpp" />
@@ -973,6 +974,7 @@
     <ClInclude Include="src\server\ui\runtime\server_ui_module_runtime.h" />
     <ClInclude Include="src\server\ui\activity_override\activity_override_panel.h" />
     <ClInclude Include="src\server\ui\activity_override\activity_override_lists.h" />
+    <ClInclude Include="src\server\ui\weapon_editor\weapon_editor_panel.h" />
     <ClInclude Include="src\server\bap\runtime.h" />
     <ClInclude Include="src\server\bap\internal.h" />
     <ClInclude Include="src\server\bap\encrypted\internal.h" />

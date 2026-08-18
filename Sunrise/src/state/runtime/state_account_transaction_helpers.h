@@ -138,6 +138,7 @@ find_resolved_position(const middleware::datagen::family4::loadout::ResolvedLoad
                                      std::uint64_t targetInstanceSoid,
                                      std::uint8_t socketLane,
                                      std::uint16_t plugDefinitionIndex,
+                                     bool unrestricted,
                                      PendingSocketPlug& mutation) noexcept;
 [[nodiscard]] bool stage_item_state(const AccountState& snapshot,
                                     std::size_t characterIndex,
