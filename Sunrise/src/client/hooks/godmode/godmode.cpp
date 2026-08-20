@@ -41,7 +41,7 @@ std::byte* g_instruction{};
     return false;
 }
 
-/** Writes one validated instruction and restores its page protection. */
+/** Writes one validated instruction. WriteProcessMemory handles the executable page protection. */
 [[nodiscard]] bool write(bool enabled) noexcept {
     const auto& expected = enabled ? kOriginal : kPatch;
     const auto& replacement = enabled ? kPatch : kOriginal;
@@ -54,16 +54,14 @@ std::byte* g_instruction{};
     if (std::memcmp(g_instruction, expected.data(), expected.size()) != 0) {
         return false;
     }
-    DWORD originalProtection = 0;
-    if (VirtualProtect(
-            g_instruction, replacement.size(), PAGE_EXECUTE_READWRITE, &originalProtection)
-        == FALSE) {
-        return false;
-    }
-    std::memcpy(g_instruction, replacement.data(), replacement.size());
-    FlushInstructionCache(GetCurrentProcess(), g_instruction, replacement.size());
-    DWORD ignored = 0;
-    return VirtualProtect(g_instruction, replacement.size(), originalProtection, &ignored) != FALSE;
+    SIZE_T written = 0;
+    return WriteProcessMemory(GetCurrentProcess(),
+                              g_instruction,
+                              replacement.data(),
+                              replacement.size(),
+                              &written)
+               != FALSE
+           && written == replacement.size();
 }
 
 } // namespace
