@@ -72,6 +72,7 @@ void parse(std::string_view text, Settings& output) noexcept {
     boolean_for(text, "\"infinite_ammo_enabled\"", output.infiniteAmmoEnabled);
     boolean_for(text, "\"no_turnback_enabled\"", output.noTurnbackEnabled);
     boolean_for(text, "\"godmode_enabled\"", output.godmodeEnabled);
+    boolean_for(text, "\"bottomless_magazine_enabled\"", output.bottomlessMagazineEnabled);
 }
 
 /**
@@ -91,10 +92,12 @@ void parse(std::string_view text, Settings& output) noexcept {
                                    "  \"infinite_ammo_enabled\": %s,\n"
                                    "  \"no_turnback_enabled\": %s,\n"
                                    "  \"godmode_enabled\": %s\n"
+                                   "  \"bottomless_magazine_enabled\": %s\n"
                                    "}\n",
                                    settings.infiniteAmmoEnabled ? "true" : "false",
                                    settings.noTurnbackEnabled ? "true" : "false",
-                                   settings.godmodeEnabled ? "true" : "false");
+                                   settings.godmodeEnabled ? "true" : "false",
+                                   settings.bottomlessMagazineEnabled ? "true" : "false");
     if (size <= 0) {
         return false;
     }

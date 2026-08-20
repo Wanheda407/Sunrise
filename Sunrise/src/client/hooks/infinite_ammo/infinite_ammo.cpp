@@ -68,6 +68,11 @@ std::array<hooking::detour::Handle, kHandleCount> g_handles{};
     return client::player::get().infiniteAmmoEnabled;
 }
 
+/** @return True while bottomless-magazine option is on. */
+[[nodiscard]] bool bottomless_enabled() noexcept {
+    return client::player::get().bottomlessMagazineEnabled;
+}
+
 /**
  * Asks for a full reserve instead of the amount the game worked out.
  * @param weapon Weapon instance.
@@ -94,7 +99,7 @@ std::int64_t __fastcall set_magazine(void* weapon, std::int32_t amount) noexcept
     if (next == nullptr) {
         return 0;
     }
-    const std::int64_t result = next(weapon, amount);
+    const std::int64_t result = next(weapon, bottomless_enabled() ? kRequestedCount : amount);
     const Setter reserves = reinterpret_cast<Setter>(g_handles[kReservesSlot].original);
     if (enabled() && reserves != nullptr && weapon != nullptr) {
         (void)reserves(weapon, kRequestedCount);

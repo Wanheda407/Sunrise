@@ -172,7 +172,9 @@ void draw() noexcept {
 
     const bool changed = core::ui::components::toggle::control("Enabled##infinite_ammo",
                                                                settings.infiniteAmmoEnabled);
-    if (changed) {
+    const bool changed2 = core::ui::components::toggle::control(
+        "Bottomless Magazine##infinite_ammo_bottomless", settings.bottomlessMagazineEnabled);
+    if (changed || changed2) {
         (void)client::player::publish(settings);
     }
 

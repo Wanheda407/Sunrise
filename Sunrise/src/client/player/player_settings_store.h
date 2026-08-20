@@ -7,6 +7,7 @@ struct Settings {
     bool infiniteAmmoEnabled{false};
     bool noTurnbackEnabled{false};
     bool godmodeEnabled{false};
+    bool bottomlessMagazineEnabled{false};
 };
 
 /**
