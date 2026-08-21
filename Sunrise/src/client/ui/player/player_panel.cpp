@@ -165,48 +165,51 @@ void draw_inactivity() noexcept {
 void draw() noexcept {
     client::player::Settings settings = client::player::get();
 
-    ImGui::TextUnformatted("Infinite Ammo");
-    ImGui::Separator();
-    ImGui::TextWrapped("Keep every weapon's reserves full.");
-    ImGui::Spacing();
+    auto draw_section = [](const char* title, const char* description) {
+        ImGui::TextUnformatted(title);
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", description);
+        ImGui::Spacing();
+    };
 
-    const bool changed = core::ui::components::toggle::control("Enabled##infinite_ammo",
-                                                               settings.infiniteAmmoEnabled);
-    const bool changed2 = core::ui::components::toggle::control(
-        "Bottomless Magazine##infinite_ammo_bottomless", settings.bottomlessMagazineEnabled);
-    if (changed || changed2) {
+    auto draw_hook_toggle = [&](const char* label, bool& enabled, auto&& apply) {
+        if (!toggle::control(label, enabled)) {
+            return;
+        }
+        if (!apply(enabled)) {
+            enabled = !enabled;
+            return;
+        }
+        (void)client::player::publish(settings);
+    };
+
+    // Infinite Ammo
+    draw_section("Infinite Ammo", "Keep all weapon's reserves full.");
+    const bool infiniteAmmoChanged =
+        toggle::control("Enabled##infinite_ammo", settings.infiniteAmmoEnabled);
+    const bool bottomlessMagazineChanged = toggle::control(
+        "Bottomless Magazine##bottomless_magazine", settings.bottomlessMagazineEnabled);
+    if (infiniteAmmoChanged || bottomlessMagazineChanged) {
         (void)client::player::publish(settings);
     }
 
     ImGui::Spacing();
     ImGui::Spacing();
-    ImGui::TextUnformatted("No Turnback");
-    ImGui::Separator();
-    ImGui::TextWrapped("Disable turnback-zone enforcement.");
-    ImGui::Spacing();
 
-    if (toggle::control("Enabled##no_turnback", settings.noTurnbackEnabled)) {
-        if (hooks::no_turnback::set_enabled(settings.noTurnbackEnabled)) {
-            (void)client::player::publish(settings);
-        } else {
-            settings.noTurnbackEnabled = !settings.noTurnbackEnabled;
-        }
-    }
+    // No Turnback
+    draw_section("No Turnback", "Disable turnback-zone enforcement.");
+    draw_hook_toggle("Enabled##no_turnback", settings.noTurnbackEnabled, [](bool enabled) {
+        return hooks::no_turnback::set_enabled(enabled);
+    });
 
     ImGui::Spacing();
     ImGui::Spacing();
-    ImGui::TextUnformatted("Godmode");
-    ImGui::Separator();
-    ImGui::TextWrapped("Prevent the player from taking damage.");
-    ImGui::Spacing();
 
-    if (toggle::control("Enabled##godmode", settings.godmodeEnabled)) {
-        if (hooks::godmode::set_enabled(settings.godmodeEnabled)) {
-            (void)client::player::publish(settings);
-        } else {
-            settings.godmodeEnabled = !settings.godmodeEnabled;
-        }
-    }
+    // Godmode
+    draw_section("Godmode", "Prevent the player from taking damage.");
+    draw_hook_toggle("Enabled##godmode", settings.godmodeEnabled, [](bool enabled) {
+        return hooks::godmode::set_enabled(enabled);
+    });
 
     ImGui::Spacing();
     ImGui::Spacing();
