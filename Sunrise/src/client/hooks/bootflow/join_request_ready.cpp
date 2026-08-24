@@ -78,32 +78,37 @@ __declspec(noinline) bool __fastcall join_request_ready(void* client) noexcept {
 
 } // namespace
 
-/** Attaches the join-request readiness force. */
-bool install_join_request_ready() noexcept {
+/** Stages the join-request readiness force. */
+StageResult stage_join_request_ready(hooking::detour::Spec& spec) noexcept {
     if (g_handle.attached) {
-        return true;
+        return StageResult::attached;
     }
     std::byte* const call = scan_main_image_unique(kCallSignature, "join_request_ready_call");
     if (call == nullptr) {
         core::log::write(core::log::Channel::client,
                          core::log::Level::warn,
                          "ev=bootflow stage=join_ready result=fail reason=target");
-        return false;
+        return StageResult::unavailable;
     }
     std::byte* const target = resolve_relative(call + kCallOperandOffset, call + kCallLength);
-    const hooking::detour::Spec spec{target, reinterpret_cast<void*>(&join_request_ready)};
-    if (!hooking::detour::install(spec, g_handle)) {
+    spec = hooking::detour::Spec{target, reinterpret_cast<void*>(&join_request_ready)};
+    return StageResult::staged;
+}
+
+/** Takes the join-request readiness force's attached handle, or a detached one. */
+void publish_join_request_ready(const hooking::detour::Handle& handle) noexcept {
+    if (!handle.attached) {
         core::log::write(core::log::Channel::client,
                          core::log::Level::warn,
                          "ev=bootflow stage=join_ready result=fail reason=attach");
-        return false;
+        return;
     }
+    g_handle = handle;
     g_original.store(reinterpret_cast<JoinRequestReady>(g_handle.original),
                      std::memory_order_release);
     core::log::write(core::log::Channel::client,
                      core::log::Level::info,
                      "ev=bootflow stage=join_ready result=ok");
-    return true;
 }
 
 /** Detaches the join-request readiness force. */
