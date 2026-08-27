@@ -17,14 +17,15 @@ Destiny 2 Offline Exploration Mod
 - Exploration Features (Fly, Noclip, Activity Override, ...)
 - Basic Inventory Management
 
-## Fork Features
-This fork combines features of other forks and prs that are not in the main repo yet. Mostly for my own use but it includes the following:
+### Fork Features
+>This fork combines features of other forks and prs that are not in the main repo yet. Mostly for my own use but it includes the following:
 
 - [ReGlitched/Sunrise](https://github.com/ReGlitched/Sunrise) (Entity Spawner)
 - Bottomless magazines, built by me
-- [ItsReaver/Sunrise/feature/player-no-turnback-godmode](https://github.com/ltsReaver/Sunrise/tree/feature/player-no-turnback-godmode) (Godmode and Turnback avoidance)
+- [ItsReaver/Sunrise:feature/player-no-turnback-godmode](https://github.com/ltsReaver/Sunrise/tree/feature/player-no-turnback-godmode) (Godmode and Turnback avoidance)
 - [pr/80](https://github.com/stanuwu/Sunrise/pull/80) (Basic Roster)
 - [pr/85](https://github.com/stanuwu/Sunrise/pull/85) (Exotic Catalysts)
+- [pr/90](https://github.com/stanuwu/Sunrise/pull/90) (Faster Boot Times)
 
 ## WIP
 
