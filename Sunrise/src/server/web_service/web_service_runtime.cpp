@@ -4,16 +4,14 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
-#include <cstring>
-#include <limits>
-#include <string_view>
 
 #include "../../core/logging/log.h"
-#include "../../middleware/encoding/bit_reader.h"
-#include "../../middleware/encoding/byte_order.h"
+#include "../../middleware/web_service/messages/opcode1801.h"
+#include "../../middleware/web_service/messages/opcode1821.h"
 #include "../../middleware/web_service/messages/opcode1901.h"
 #include "../../middleware/web_service/messages/opcode205.h"
 #include "../../middleware/web_service/messages/opcode206.h"
+#include "../../middleware/web_service/messages/opcode2400.h"
 #include "../../middleware/web_service/messages/opcode501_codec.h"
 #include "../../middleware/web_service/messages/opcode503.h"
 #include "../../middleware/web_service/messages/opcode504.h"
@@ -23,19 +21,13 @@
 #include "../../middleware/web_service/messages/opcode903.h"
 #include "../../middleware/web_service/web_service_envelope.h"
 #include "../../state/account/account_state.h"
-#include "../../state/build_data/runtime.h"
+#include "../../state/progression/seasonal_experience.h"
 #include "../../state/runtime/runtime.h"
 #include "opcode_routes.h"
 #include "web_service_actions.h"
 
 namespace sunrise::server::web_service {
 
-/** One ordinary event line carries an opcode and its fixed prefix. */
-constexpr std::size_t kOpcodeLineCapacity = 64;
-/** A request trace keeps enough payload to identify an item-action descriptor. */
-constexpr std::size_t kRequestPayloadTraceBytes = 192;
-/** Marks a trace that stopped at the cap, so a short hex string is not read as a short payload. */
-constexpr std::string_view kTruncated = " truncated=1";
 /** Web Service opcode used by the Character screen's Equip action. */
 constexpr std::uint16_t kEquipOpcode = 403;
 /** Web Service opcode used by the Character screen's Unequip action. */
@@ -46,8 +38,6 @@ constexpr std::uint16_t kItemStateOpcode = 406;
 constexpr std::uint16_t kItemDismantleOpcode = 402;
 /** Web Service opcode used by Collections to create one item instance. */
 constexpr std::uint16_t kItemAcquisitionOpcode = 1820;
-/** The mutation variant's first alternative is the empty one, so index zero prepared nothing. */
-constexpr std::size_t kNoMutation = 0;
 /**
  * Logical status of a refused action. The descriptor biases logical zero to the wire success the
  * Client expects, so any other logical value reports a refusal. Its five bits hold no error
@@ -55,44 +45,20 @@ constexpr std::size_t kNoMutation = 0;
  */
 constexpr std::int32_t kRefusedStatus = 1;
 
-/**
- * Logs the Web Service opcode and a bounded payload trace.
- * One svc-10 frame looks like any other, and the opcode drives the client's queuez state machine.
- * @param message Parsed request envelope and borrowed payload.
- */
-void report_request(const middleware::web_service::Message& message) noexcept {
-    std::array<char, core::log::kLineCapacity> line{};
-    const int prefix =
-        std::snprintf(line.data(),
-                      line.size(),
-                      "ev=ws stage=request opcode=%u transaction=%u payload_bytes=%zu payload_hex=",
-                      static_cast<unsigned>(message.opcode),
-                      static_cast<unsigned>(message.transactionId),
-                      message.payload.size());
-    if (prefix <= 0 || static_cast<std::size_t>(prefix) >= line.size()) {
-        return;
-    }
-
-    std::size_t length = static_cast<std::size_t>(prefix);
-    const std::size_t traced =
-        (std::min)(message.payload.size(), static_cast<std::size_t>(kRequestPayloadTraceBytes));
-    (void)core::log::append_hex(line, length, message.payload.first(traced));
-    if (traced != message.payload.size() && length + kTruncated.size() < line.size()) {
-        std::memcpy(line.data() + length, kTruncated.data(), kTruncated.size());
-        length += kTruncated.size();
-    }
-    if (length != 0) {
-        core::log::write(core::log::Channel::server, core::log::Level::info, {line.data(), length});
-    }
-}
+constexpr auto kResidentDependentOpcodes =
+    std::to_array<std::uint16_t>({402, 403, 404, 406, 504, 903, 1801, 1820, 1901, 2400});
 
 /** One refusal line carries both request indices, the clock presence, and the clock verdict. */
 constexpr std::size_t kPurchaseLineCapacity = 128;
+constexpr std::size_t kEchoLineCapacity = 64;
 /**
  * Status code answered to a purchase request.
  * Any non-zero value refuses. Zero is the success code, so it must not be used here.
  */
 constexpr std::int32_t kPurchaseRefusedCode = 1;
+/** Season of Arrivals artifact vendor row in the installed build's vendor index. */
+constexpr std::int16_t kArtifactVendorIndex = 430;
+constexpr std::int32_t kArtifactResetGlimmerCost = 20'000;
 
 /**
  * Reads the server's own clock for the purchase clock rule.
@@ -151,6 +117,74 @@ constexpr std::int32_t kPurchaseRefusedCode = 1;
         written);
 }
 
+/** Accepts one affordable, unlocked-tier artifact mod and reports the local purchase effect. */
+[[nodiscard]] bool purchase_artifact_mod(const middleware::web_service::Message& message,
+                                         std::span<std::byte> response,
+                                         std::size_t& written,
+                                         Outcome& outcome) noexcept {
+    namespace purchase_codec = middleware::web_service::messages::opcode901;
+    purchase_codec::Request purchase{};
+    if (!purchase_codec::parse_request(message, purchase)
+        || purchase.vendorIndex != kArtifactVendorIndex || purchase.saleIndex < 0
+        || purchase.saleIndex
+               >= static_cast<std::int16_t>(
+                   state::progression::seasonal_experience::kArtifactSaleCount)) {
+        return false;
+    }
+    const auto saleIndex = static_cast<std::uint16_t>(purchase.saleIndex);
+    if (saleIndex == 5) {
+        state::ArtifactResetResult reset{};
+        if (!state::reset_artifact(kArtifactResetGlimmerCost, reset)) {
+            return false;
+        }
+        middleware::web_service::StatusResponse status{};
+        status.trailingBool = true;
+        const bool encoded = middleware::web_service::encode_response(
+            message,
+            middleware::web_service::ResponseShape::statusPairWithBool,
+            status,
+            response,
+            written);
+        outcome.hasArtifactReset = encoded;
+        if (encoded) {
+            outcome.artifactReset = reset;
+        }
+        return encoded;
+    }
+    auto* mutation = emplace_mutation<state::PendingArtifactPurchase>(outcome);
+    if (mutation == nullptr || !state::prepare_artifact_mod_unlock(saleIndex, *mutation)) {
+        clear_mutation(outcome);
+        return false;
+    }
+    std::array<char, kPurchaseLineCapacity> line{};
+    const int length =
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=ws901 stage=artifact result=ok vendor=%d sale=%d policy=%s",
+                      static_cast<int>(purchase.vendorIndex),
+                      static_cast<int>(purchase.saleIndex),
+                      purchase_codec::clock_policy_name(
+                          purchase_codec::check_clock(purchase, server_clock_seconds())));
+    if (length > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(length)});
+    }
+    middleware::web_service::StatusResponse status{};
+    status.trailingBool = true;
+    const bool encoded = middleware::web_service::encode_response(
+        message,
+        middleware::web_service::ResponseShape::statusPairWithBool,
+        status,
+        response,
+        written);
+    if (!encoded) {
+        clear_mutation(outcome);
+        return false;
+    }
+    return true;
+}
+
 /**
  * Answers a request whose own codec refused with the bare correlated echo.
  * The Client matches on the echoed transaction id. A missing body is worse than a thin one. It
@@ -163,7 +197,7 @@ constexpr std::int32_t kPurchaseRefusedCode = 1;
 bool encode_echo(const middleware::web_service::Message& message,
                  std::span<std::byte> response,
                  std::size_t& written) noexcept {
-    std::array<char, kOpcodeLineCapacity> line{};
+    std::array<char, kEchoLineCapacity> line{};
     const int count = std::snprintf(
         line.data(), line.size(), "ev=ws stage=body result=echo opcode=%u", message.opcode);
     if (count > 0) {
@@ -176,18 +210,25 @@ bool encode_echo(const middleware::web_service::Message& message,
         message, ws::ResponseShape::generic, ws::StatusResponse{}, response, written);
 }
 
-/**
- * Parses and answers one Web Service request with its whole descriptor layout.
- * @param request Whole decrypted svc-10 body.
- * @param response Svc-11 response-body storage owned by the caller.
- * @param written Gets the encoded response-body size, or zero when the header does not parse.
- * @return False only when the envelope header does not parse.
- */
-bool consume(std::span<const std::byte> request,
-             std::span<std::byte> response,
-             std::size_t& written) noexcept {
-    Outcome outcome;
-    return consume(request, response, written, outcome);
+bool encode_resident_dependent_refusal(std::span<const std::byte> request,
+                                       std::span<std::byte> response,
+                                       std::size_t& written,
+                                       bool& refused) noexcept {
+    written = 0;
+    refused = false;
+    middleware::web_service::Message message;
+    if (!middleware::web_service::parse_request(request, message)
+        || !std::binary_search(
+            kResidentDependentOpcodes.begin(), kResidentDependentOpcodes.end(), message.opcode)) {
+        return true;
+    }
+    refused = true;
+    middleware::web_service::ResponseShape shape{};
+    resolve_response_shape(message.opcode, shape);
+    middleware::web_service::StatusResponse status{};
+    status.code = kRefusedStatus;
+    return middleware::web_service::encode_response(message, shape, status, response, written)
+           || encode_echo(message, response, written);
 }
 
 /**
@@ -211,13 +252,10 @@ bool consume(std::span<const std::byte> request,
             core::log::Channel::server, core::log::Level::warn, "ev=ws stage=parse result=fail");
         return false;
     }
-    report_request(message);
-
     if (message.opcode == middleware::web_service::messages::opcode205::kOpcode) {
-        state::InvestmentState investment{};
-        return (state::investment_snapshot(investment)
-                && middleware::web_service::messages::opcode205::encode_response(
-                    message, investment, response, written))
+        const auto investment = state::investment_snapshot();
+        return middleware::web_service::messages::opcode205::encode_response(
+                   message, investment, response, written)
                || encode_echo(message, response, written);
     }
 
@@ -230,9 +268,8 @@ bool consume(std::span<const std::byte> request,
         if (!bootstrap.hasPrimarySoid) {
             bootstrap.primarySoid = state::account_snapshot().primarySoid;
         }
-        state::InvestmentState investment{};
-        if (!parsed || !state::investment_snapshot(investment)
-            || !middleware::web_service::messages::opcode503::encode_response(
+        const auto investment = state::investment_snapshot();
+        if (!parsed || !middleware::web_service::messages::opcode503::encode_response(
                 message, bootstrap, investment, response, written)) {
             return encode_echo(message, response, written);
         }
@@ -255,7 +292,8 @@ bool consume(std::span<const std::byte> request,
 
     // Runs before the shared response-shape path, which would answer the success status.
     if (message.opcode == middleware::web_service::messages::opcode901::kOpcode) {
-        return refuse_purchase(message, response, written)
+        return purchase_artifact_mod(message, response, written, outcome)
+               || refuse_purchase(message, response, written)
                || encode_echo(message, response, written);
     }
 
@@ -275,7 +313,9 @@ bool consume(std::span<const std::byte> request,
     // An action fills the outcome only once it has prepared its whole transition, so an outcome
     // still empty afterwards is that action refusing the request. Nothing is published here.
     bool dispatched = true;
-    if (message.opcode == middleware::web_service::messages::opcode504::kOpcode) {
+    if (message.opcode == middleware::web_service::messages::opcode1801::kOpcode) {
+        claim_record(message, outcome);
+    } else if (message.opcode == middleware::web_service::messages::opcode504::kOpcode) {
         select_character(message, outcome);
     } else if (message.opcode == kItemDismantleOpcode) {
         dismantle_item(message, outcome);
@@ -285,6 +325,8 @@ bool consume(std::span<const std::byte> request,
         mutate_equipment(message, true, outcome);
     } else if (message.opcode == middleware::web_service::messages::opcode801::kOpcode) {
         mutate_subclass_selection(message, outcome);
+    } else if (message.opcode == middleware::web_service::messages::opcode1821::kOpcode) {
+        equip_title(message, outcome);
     } else if (message.opcode == middleware::web_service::messages::opcode903::kOpcode) {
         mutate_socket_plug(message, outcome);
     } else if (message.opcode == middleware::web_service::messages::opcode1901::kOpcode) {
@@ -293,10 +335,13 @@ bool consume(std::span<const std::byte> request,
         mutate_item_state(message, outcome);
     } else if (message.opcode == kItemAcquisitionOpcode) {
         acquire_item(message, outcome);
+    } else if (message.opcode == middleware::web_service::messages::opcode2400::kOpcode) {
+        claim_season_pass_reward(message, outcome);
     } else {
         dispatched = false;
     }
-    const bool prepared = outcome.hasSelectedCharacter || outcome.mutation.index() != kNoMutation;
+    const bool prepared = outcome.hasSelectedCharacter || outcome.hasTitleEquip
+                          || outcome.hasRecordClaim || has_mutation(outcome);
 
     middleware::web_service::ResponseShape shape{};
     resolve_response_shape(message.opcode, shape);

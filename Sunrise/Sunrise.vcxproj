@@ -52,7 +52,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)vendor\detours;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
       <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;IMGUI_USER_CONFIG=&quot;core/ui/imgui_user_config.h&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;IMGUI_USER_CONFIG="core/ui/imgui_user_config.h";%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -593,7 +593,6 @@
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_slot_request_parser.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_slots_decoder.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_authority_parser.cpp" />
-    <ClCompile Include="src\middleware\bap\activity_message\activity_incident_encoder.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_incident_parser.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_slots_encoder.cpp" />
     <ClCompile Include="src\middleware\bap\certificate.cpp" />
@@ -838,6 +837,22 @@
     <ClCompile Include="src\middleware\gameplay\group\migration_messages.cpp" />
     <ClCompile Include="src\middleware\gameplay\group\notice_messages.cpp" />
     <ClCompile Include="src\server\gameplay\group\group_migration_receipts.cpp" />
+    <ClCompile Include="src\client\content\items\packages\package_node_build.cpp" />
+    <ClCompile Include="src\client\content\items\packages\package_record_build.cpp" />
+    <ClCompile Include="src\middleware\web_service\messages\opcode1801_codec.cpp" />
+    <ClCompile Include="src\middleware\web_service\messages\opcode1821_codec.cpp" />
+    <ClCompile Include="src\middleware\web_service\messages\opcode2400_codec.cpp" />
+    <ClCompile Include="src\state\build_data\nodes\node_build_data_runtime.cpp" />
+    <ClCompile Include="src\state\build_data\nodes\node_catalog.cpp" />
+    <ClCompile Include="src\state\build_data\records\record_build_data_runtime.cpp" />
+    <ClCompile Include="src\state\build_data\records\record_catalog.cpp" />
+    <ClCompile Include="src\state\build_data\records\rewards\reward_build_data_runtime.cpp" />
+    <ClCompile Include="src\state\build_data\records\rewards\reward_catalog.cpp" />
+    <ClCompile Include="src\state\build_data\records\rewards\reward_persistence.cpp" />
+    <ClCompile Include="src\state\record_claims\record_claims.cpp" />
+    <ClCompile Include="src\state\progression\seasonal_experience.cpp" />
+    <ClCompile Include="src\state\build_data\sobjects\sobject_catalog.cpp" />
+    <ClCompile Include="src\state\lore\lore_grant.cpp" />
   </ItemGroup>
   <ItemGroup Condition="'$(SunriseRunClangTidy)'=='true'">
     <ClCompile Remove="vendor\detours\detours.cpp" />
@@ -1449,6 +1464,29 @@
     <ClInclude Include="src\middleware\gameplay\group\migration_messages.h" />
     <ClInclude Include="src\middleware\gameplay\group\notice_messages.h" />
     <ClInclude Include="src\server\gameplay\group\group_migration_receipts.h" />
+    <ClInclude Include="src\core\settings\settings_upgrade.h" />
+    <ClInclude Include="src\middleware\content\packages\tables\unlock_expression.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode1801.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode1821.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode2400.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode1820.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode402.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode403.h" />
+    <ClInclude Include="src\middleware\web_service\messages\opcode406.h" />
+    <ClInclude Include="src\state\build_data\nodes\definition.h" />
+    <ClInclude Include="src\state\build_data\nodes\node_catalog.h" />
+    <ClInclude Include="src\state\build_data\records\definition.h" />
+    <ClInclude Include="src\state\build_data\records\record_catalog.h" />
+    <ClInclude Include="src\state\build_data\records\rewards\definition.h" />
+    <ClInclude Include="src\state\build_data\records\rewards\reward_catalog.h" />
+    <ClInclude Include="src\state\build_data\records\rewards\reward_persistence.h" />
+    <ClInclude Include="src\state\record_claims\objective_slot_table.h" />
+    <ClInclude Include="src\state\record_claims\parent_bar_table.h" />
+    <ClInclude Include="src\state\record_claims\record_claims.h" />
+    <ClInclude Include="src\state\progression\season_pass_reward_catalog.h" />
+    <ClInclude Include="src\state\progression\seasonal_experience.h" />
+    <ClInclude Include="src\state\build_data\sobjects\sobject_catalog.h" />
+    <ClInclude Include="src\state\lore\lore_grant.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -1,12 +1,13 @@
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
-#include <atomic>
-#include <cstdio>
 #include <limits>
 
+#include "../../client/hooks/network/investment/investment_derived_rebuild.h"
 #include "../../core/logging/log.h"
 #include "../../state/matchmaking/matchmaking_state.h"
+#include "../../state/progression/seasonal_experience.h"
 #include "encrypted/bap_connection_publication.h"
 #include "internal.h"
 #include "runtime.h"
@@ -17,39 +18,69 @@ namespace {
 SRWLOCK g_lock{SRWLOCK_INIT};
 std::array<Session, kSessionCount> g_sessions{};
 Scratch g_scratch{};
-std::uint64_t g_accountGeneration{};
+std::array<WorldRewardRequest, kWorldRewardQueueCapacity> g_worldRewards{};
+std::size_t g_worldRewardHead{};
+std::size_t g_worldRewardCount{};
+/** Measured lifetime of the native item-acquisition flyout. */
+constexpr std::uint64_t kAcquisitionPresentationHoldMs = 8'000;
+constexpr std::uint8_t kWorldRewardFailureLimit = 8;
+
+[[nodiscard]] bool has_active_family4_peer() noexcept {
+    return std::any_of(g_sessions.begin(), g_sessions.end(), [](const Session& session) {
+        return session.id != 0 && session.authenticated && session.queuez.family4Active;
+    });
+}
+
+void pop_world_reward() noexcept {
+    g_worldRewards[g_worldRewardHead] = {};
+    g_worldRewardHead = (g_worldRewardHead + 1) % g_worldRewards.size();
+    --g_worldRewardCount;
+}
+
+[[nodiscard]] bool commit_world_reward(const WorldRewardRequest& request) noexcept {
+    if (request.kind == WorldRewardKind::item) {
+        state::PendingItemAcquisition acquisition{};
+        return state::prepare_item_acquisition_for_item(request.itemDefinitionIndex, acquisition)
+               && state::commit_item_acquisition(acquisition);
+    }
+    state::PendingProfileItemAcquisition acquisition{};
+    return state::prepare_profile_item_acquisition_for_item(
+               request.itemDefinitionIndex, request.quantity, acquisition)
+           && state::commit_profile_item_acquisition(acquisition);
+}
+
+[[nodiscard]] bool enqueue_world_reward(WorldRewardRequest request) noexcept {
+    if (!has_active_family4_peer()) {
+        while (g_worldRewardCount != 0) {
+            if (!commit_world_reward(g_worldRewards[g_worldRewardHead])) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::warn,
+                                 "ev=world_reward stage=direct result=drop");
+            }
+            pop_world_reward();
+        }
+        return commit_world_reward(request);
+    }
+    if (g_worldRewardCount == g_worldRewards.size()) {
+        const bool committed = commit_world_reward(g_worldRewards[g_worldRewardHead]);
+        if (committed) {
+            arm_account_resync_everywhere();
+        }
+        pop_world_reward();
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         committed ? "ev=world_reward stage=queue_full result=direct"
+                                   : "ev=world_reward stage=queue_full result=drop");
+    }
+    g_worldRewards[(g_worldRewardHead + g_worldRewardCount) % g_worldRewards.size()] = request;
+    ++g_worldRewardCount;
+    return true;
+}
 
 /** Arms every other active peer after one shared-account transaction is published. */
 void publish_account_mutation(Session& origin) noexcept {
     origin.accountMutationPublished = false;
-    g_accountGeneration = g_accountGeneration == (std::numeric_limits<std::uint64_t>::max)()
-                              ? 1
-                              : g_accountGeneration + 1;
-    origin.accountGeneration = g_accountGeneration;
-    origin.accountResyncGeneration = g_accountGeneration;
-    origin.accountResyncArmed = false;
-    std::size_t armed = 0;
-    for (auto& peer : g_sessions) {
-        if (&peer == &origin || peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active) {
-            continue;
-        }
-        peer.accountResyncGeneration = g_accountGeneration;
-        peer.accountResyncArmed = true;
-        ++armed;
-    }
-    std::array<char, core::log::kLineCapacity> line{};
-    const int count = std::snprintf(line.data(),
-                                    line.size(),
-                                    "ev=queuez stage=peer_resync_arm result=ok generation=%llu "
-                                    "origin=%u peers=%zu",
-                                    static_cast<unsigned long long>(g_accountGeneration),
-                                    origin.id,
-                                    armed);
-    if (count > 0) {
-        core::log::write(core::log::Channel::server,
-                         core::log::Level::debug,
-                         {line.data(), static_cast<std::size_t>(count)});
-    }
+    arm_account_resync_elsewhere(origin);
 }
 
 /** @param id Nonzero connection id. @return Matching open session, or null. */
@@ -171,18 +202,115 @@ void clear_session(Session& session) noexcept {
 [[nodiscard]] bool consume_poll(const client::network::BapRequest& request,
                                 client::network::BapResponse& response,
                                 bool& touchesScratch) noexcept {
-    static std::atomic_bool reported{false};
-    if (!reported.exchange(true, std::memory_order_relaxed)) {
-        core::log::write(
-            core::log::Channel::server, core::log::Level::info, "ev=queuez stage=poll result=ok");
-    }
     auto* session = session_for(request.connectionId);
-    return session != nullptr
-           && encrypted::consume_deferred(
-               *session, g_scratch, request.response, response.size, touchesScratch);
+    if (session == nullptr) {
+        return false;
+    }
+    // The purchase response carries the Family-4 ownership rows. Refresh Family 5 only after the
+    // client has consumed that response, so derived artifact state never mixes adjacent purchases.
+    if (session->artifactRefreshArmed) {
+        const state::Family5State family = state::investment_snapshot().family5;
+        if (client::hooks::network::investment::publish_live_family5(family)) {
+            session->artifactRefreshArmed = false;
+        }
+    }
+    return encrypted::consume_deferred(
+        *session, g_scratch, request.response, response.size, touchesScratch);
 }
 
 } // namespace
+
+void arm_account_resync_elsewhere(Session& origin) noexcept {
+    for (auto& peer : g_sessions) {
+        if (&peer != &origin && peer.id != 0 && peer.authenticated && peer.queuez.family4Active) {
+            peer.accountResyncArmed = true;
+        }
+    }
+}
+
+/** Arms every active peer to re-read the account, including the origin. */
+void arm_account_resync_everywhere() noexcept {
+    for (auto& peer : g_sessions) {
+        if (peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active) {
+            continue;
+        }
+        peer.accountResyncArmed = true;
+    }
+}
+
+void arm_acquisition_presentation_hold(Session& session) noexcept {
+    const std::uint64_t now = GetTickCount64();
+    if (now >= session.acquisitionPresentationUntilTick) {
+        session.acquisitionPresentationRows = {};
+        session.acquisitionPresentationRowCount = 0;
+    }
+    session.acquisitionPresentationUntilTick =
+        (std::max)(session.acquisitionPresentationUntilTick, now + kAcquisitionPresentationHoldMs);
+}
+
+bool arm_world_item_acquisition(std::uint16_t itemDefinitionIndex) noexcept {
+    return enqueue_world_reward({1, itemDefinitionIndex, WorldRewardKind::item});
+}
+
+bool arm_world_profile_item_acquisition(std::uint16_t itemDefinitionIndex,
+                                        std::int32_t quantity) noexcept {
+    if (quantity <= 0) {
+        return false;
+    }
+    return enqueue_world_reward({quantity, itemDefinitionIndex, WorldRewardKind::profileItem});
+}
+
+bool current_world_reward(WorldRewardRequest& request) noexcept {
+    if (g_worldRewardCount == 0) {
+        request = {};
+        return false;
+    }
+    request = g_worldRewards[g_worldRewardHead];
+    return true;
+}
+
+void complete_world_reward() noexcept {
+    if (g_worldRewardCount == 0) {
+        return;
+    }
+    pop_world_reward();
+}
+
+void fail_world_reward_attempt() noexcept {
+    if (g_worldRewardCount == 0
+        || ++g_worldRewards[g_worldRewardHead].failures < kWorldRewardFailureLimit) {
+        return;
+    }
+    const bool committed = commit_world_reward(g_worldRewards[g_worldRewardHead]);
+    pop_world_reward();
+    if (committed) {
+        arm_account_resync_everywhere();
+    }
+    core::log::write(core::log::Channel::server,
+                     core::log::Level::warn,
+                     committed ? "ev=world_reward stage=retry_limit result=direct"
+                               : "ev=world_reward stage=retry_limit result=drop");
+}
+
+bool arm_seasonal_experience_presentation(std::int32_t amount) noexcept {
+    if (amount <= 0) {
+        return false;
+    }
+    for (auto& peer : g_sessions) {
+        if (peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active
+            || peer.pendingSeasonalExperienceAmount
+                   > (std::numeric_limits<std::int32_t>::max)() - amount) {
+            continue;
+        }
+        if (!state::progression::seasonal_experience::grant(amount)) {
+            return false;
+        }
+        peer.pendingSeasonalExperienceAmount += amount;
+        peer.pendingSeasonalExperienceFailures = 0;
+        return true;
+    }
+    return false;
+}
 
 /** Applies one serialized BAP connection lifecycle event. */
 bool consume(const client::network::BapRequest& request,
@@ -218,6 +346,14 @@ bool consume(const client::network::BapRequest& request,
 /** Securely erases every connection-owned nonce and transform buffer. */
 void shutdown() noexcept {
     AcquireSRWLockExclusive(&g_lock);
+    while (g_worldRewardCount != 0) {
+        if (!commit_world_reward(g_worldRewards[g_worldRewardHead])) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=world_reward stage=shutdown result=drop");
+        }
+        pop_world_reward();
+    }
     for (auto& session : g_sessions) {
         if (session.id != 0
             && session.matchmakingContext.generation != state::matchmaking::kInvalidGeneration) {
@@ -229,8 +365,10 @@ void shutdown() noexcept {
         }
     }
     SecureZeroMemory(g_sessions.data(), sizeof g_sessions);
+    g_worldRewards = {};
+    g_worldRewardHead = 0;
+    g_worldRewardCount = 0;
     SecureZeroMemory(&g_scratch, sizeof g_scratch);
-    g_accountGeneration = 0;
     ReleaseSRWLockExclusive(&g_lock);
 }
 

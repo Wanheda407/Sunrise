@@ -10,7 +10,7 @@
 
 namespace sunrise::state::account::inventory {
 
-/** Authored equipment exposes the 16 named slots the first State supports. */
+/** Authored equipment exposes every named slot currently represented by State. */
 enum class EquipmentSlot : std::uint8_t {
     kinetic,
     energy,
@@ -28,6 +28,7 @@ enum class EquipmentSlot : std::uint8_t {
     emblem,
     emote,
     finisher,
+    artifact,
     count,
 };
 
@@ -63,6 +64,8 @@ inline constexpr std::uint64_t kFirstProfileItemInstanceSoid = 0x500000000000000
  * * per semantic slot can be equipped, leaving at most 135 simultaneously unequipped instances.
  */
 inline constexpr std::size_t kCharacterItemCapacity = 135;
+/** Runtime-owned non-instanced character stacks. */
+inline constexpr std::size_t kCharacterStackCapacity = 32;
 
 /** One authored account-wide item, placed by the inventory bucket its definition names. */
 struct ProfileItem {
@@ -107,6 +110,17 @@ struct CharacterItems {
     std::size_t count{};
 };
 
+struct CharacterStack {
+    std::uint32_t definitionHash{};
+    std::int32_t quantity{};
+    std::int32_t mutationSerial{};
+};
+
+struct CharacterStacks {
+    std::array<CharacterStack, kCharacterStackCapacity> values{};
+    std::size_t count{};
+};
+
 /** One optional authored item for every semantic equipment slot. */
 struct Equipment {
     std::array<std::optional<Item>, kEquipmentSlotCount> slots{};
@@ -139,5 +153,7 @@ struct Equipment {
 
 /** Checks the used prefix and empty tail of one character's unequipped item array. */
 [[nodiscard]] bool valid(const CharacterItems& items) noexcept;
+
+[[nodiscard]] bool valid(const CharacterStacks& items) noexcept;
 
 } // namespace sunrise::state::account::inventory

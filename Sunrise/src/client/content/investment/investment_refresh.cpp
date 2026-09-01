@@ -13,14 +13,9 @@ namespace {
 
 SRWLOCK g_refreshLock{SRWLOCK_INIT};
 
-/**
- * @return True when every persistent mapping domain is fully published.
- * The destination layouts and spawn sets belong here even though they are not equipment mappings.
- * This is the only caller of the package pass, so a domain left out of this test stops being
- * extracted once the others finish, and the cache can then never be written.
- */
 [[nodiscard]] bool ready() noexcept {
-    return state::build_data::named_catalog_ready() && state::build_data::item_definitions_ready()
+    return state::build_data::named_catalog_ready() && items::packages::ready()
+           && state::build_data::item_definitions_ready()
            && state::build_data::collectible_definitions_ready()
            && state::build_data::material_requirement_sets_ready()
            && state::build_data::configured_item_details_ready()
@@ -30,8 +25,10 @@ SRWLOCK g_refreshLock{SRWLOCK_INIT};
            && state::build_data::ability_buckets_ready()
            && state::build_data::socket_entry_buckets_ready()
            && state::build_data::progression_definitions_ready()
-           && state::build_data::scenario_layouts_ready() && state::build_data::spawn_sets_ready()
-           && state::build_data::hash_names_ready() && state::build_data::entity_names_ready()
+           && state::build_data::scenario_layouts_ready()
+           && state::build_data::spawn_sets_ready()
+           && state::build_data::hash_names_ready()
+           && state::build_data::entity_names_ready()
            && state::build_data::investment_constants_ready();
 }
 
