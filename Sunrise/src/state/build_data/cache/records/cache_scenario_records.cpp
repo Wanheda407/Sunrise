@@ -8,6 +8,8 @@ namespace {
 /** @return True when every field of the row fits its disk form. */
 [[nodiscard]] bool storable(const scenarios::Definition& value) noexcept {
     return value.nameLength != 0 && value.nameLength <= scenarios::kNameCapacity
+           && value.activityLabelLength <= scenarios::kActivityLabelCapacity
+           && value.activityUseCount <= scenarios::kActivityUseCapacity
            && value.bubbleCount <= scenarios::kBubbleCapacity && value.truncated <= 1
            && value.rosterGroupCount <= scenarios::kDestinationGroupCapacity
            && value.bubbleGroupCount <= scenarios::kDestinationBubbleGroupCapacity
@@ -56,8 +58,15 @@ bool encode(const scenarios::Definition& value, ScenarioRecord& record) noexcept
         return false;
     }
     std::copy(value.name.begin(), value.name.end(), record.name.begin());
+    std::copy(value.activityLabel.begin(), value.activityLabel.end(), record.activityLabel.begin());
     record.tag = value.tag;
     record.nameLength = value.nameLength;
+    record.activityLabelLength = value.activityLabelLength;
+    record.activityUseCount = value.activityUseCount;
+    for (std::size_t index = 0; index < value.activityUses.size(); ++index) {
+        const auto& use = value.activityUses[index];
+        record.activityUses[index] = {use.typeHash, use.label, use.labelLength, use.sources};
+    }
     record.bubbleCount = value.bubbleCount;
     record.truncated = value.truncated;
     record.rosterGroupCount = value.rosterGroupCount;
@@ -91,6 +100,8 @@ bool encode(const scenarios::Definition& value, ScenarioRecord& record) noexcept
 bool decode(const ScenarioRecord& record, scenarios::Definition& value) noexcept {
     value = {};
     if (record.nameLength == 0 || record.nameLength > scenarios::kNameCapacity
+        || record.activityLabelLength > scenarios::kActivityLabelCapacity
+        || record.activityUseCount > scenarios::kActivityUseCapacity
         || record.bubbleCount > scenarios::kBubbleCapacity || record.truncated > 1
         || record.rosterGroupCount > scenarios::kDestinationGroupCapacity
         || record.bubbleGroupCount > scenarios::kDestinationBubbleGroupCapacity
@@ -100,8 +111,16 @@ bool decode(const ScenarioRecord& record, scenarios::Definition& value) noexcept
         return false;
     }
     std::copy(record.name.begin(), record.name.end(), value.name.begin());
+    std::copy(
+        record.activityLabel.begin(), record.activityLabel.end(), value.activityLabel.begin());
     value.tag = record.tag;
     value.nameLength = record.nameLength;
+    value.activityLabelLength = record.activityLabelLength;
+    value.activityUseCount = record.activityUseCount;
+    for (std::size_t index = 0; index < record.activityUses.size(); ++index) {
+        const auto& use = record.activityUses[index];
+        value.activityUses[index] = {use.typeHash, use.label, use.labelLength, use.sources};
+    }
     value.bubbleCount = record.bubbleCount;
     value.truncated = record.truncated;
     value.rosterGroupCount = record.rosterGroupCount;

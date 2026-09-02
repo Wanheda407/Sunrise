@@ -27,6 +27,11 @@ Lists g_lists{};
     return {row.name.data(), row.nameLength};
 }
 
+/** @return The destination row's player-facing activity label as a bounded view. */
+[[nodiscard]] std::string_view label_of(const layouts::Definition& row) noexcept {
+    return {row.activityLabel.data(), row.activityLabelLength};
+}
+
 /** @return The destination row's map stem as a bounded view. */
 [[nodiscard]] std::string_view stem_of(const layouts::Definition& row) noexcept {
     return {row.spawnStem.data(), row.spawnStemLength};
@@ -35,6 +40,16 @@ Lists g_lists{};
 /** @return True when the left destination row sorts before the right one by name. */
 [[nodiscard]] bool name_less(const layouts::Definition& left,
                              const layouts::Definition& right) noexcept {
+    const std::string_view leftLabel = label_of(left);
+    const std::string_view rightLabel = label_of(right);
+    if (leftLabel != rightLabel) {
+        // Rows without a recovered label follow the player-facing rows rather than interrupting
+        // their alphabetical groups.
+        if (leftLabel.empty() != rightLabel.empty()) {
+            return !leftLabel.empty();
+        }
+        return leftLabel < rightLabel;
+    }
     return name_of(left) < name_of(right);
 }
 
@@ -244,6 +259,8 @@ void refresh_activities(Lists& rows) noexcept {
         return;
     }
     rows.activities = {};
+    rows.activityNames = {};
+    rows.activityNameLengths = {};
     rows.activityCount = 0;
     // The snapshot is a whole domain of fixed rows, so it is static rather than a local.
     static std::array<layouts::Definition, layouts::kDefinitionCapacity> scratch{};
@@ -258,7 +275,22 @@ void refresh_activities(Lists& rows) noexcept {
     // Extraction order is package order, which no reader can search. Name order is.
     std::sort(rowsRead.begin(), rowsRead.end(), name_less);
     for (const layouts::Definition& row : rowsRead) {
-        assign(name_of(row), rows.activities[rows.activityCount]);
+        const std::string_view name = name_of(row);
+        const std::string_view label = label_of(row);
+        if (label.empty()) {
+            assign(name, rows.activities[rows.activityCount]);
+        } else {
+            Label& activity = rows.activities[rows.activityCount];
+            (void)std::snprintf(activity.data(),
+                                activity.size(),
+                                "%.*s  (%.*s)",
+                                static_cast<int>(label.size()),
+                                label.data(),
+                                static_cast<int>(name.size()),
+                                name.data());
+        }
+        std::copy(name.begin(), name.end(), rows.activityNames[rows.activityCount].begin());
+        rows.activityNameLengths[rows.activityCount] = static_cast<std::uint8_t>(name.size());
         ++rows.activityCount;
     }
 }

@@ -10,6 +10,7 @@
 #include "../../../middleware/content/packages/tables/roster_intersection.h"
 #include "../../../middleware/content/packages/tables/slot_descriptor_reader.h"
 #include "../../../state/build_data/scenarios/definition.h"
+#include "activity_type_build.h"
 
 namespace sunrise::client::content::scenarios {
 
@@ -73,12 +74,58 @@ inline constexpr std::size_t kLiveTagCapacity = 1'024;
 inline constexpr std::uint64_t kResolveWindowMs = 15'000;
 /** Tag reads one collection call may spend, for the same reason the roster walk is bounded. */
 inline constexpr std::size_t kResolveReadBudget = 150;
+/** Activity metadata tags measured at 468 in the archived package set. */
+inline constexpr std::size_t kActivityTagCapacity = 1'024;
+/** Installed localized-string containers measure 4,489; this keeps bounded headroom. */
+inline constexpr std::size_t kLocalizedStringTagCapacity = 8'192;
+/** Activity or string metadata rows resolved per worker slice before the roster walk resumes. */
+inline constexpr std::size_t kLabelReadBudget = 24;
 
 /** One live scenario tag and the map-package stem of the package that carries it. */
 struct LiveTag {
     std::uint32_t tag{};
     std::array<char, layouts::kSpawnStemCapacity> stem{};
     std::uint8_t stemLength{};
+};
+
+/** Fixed working storage for activity-label extraction. */
+struct ActivityLabelStorage {
+    std::array<std::uint32_t, kActivityTagCapacity> activityTags{};
+    std::size_t activityTagCount{};
+    std::size_t activityCursor{};
+    std::array<std::uint32_t, kLocalizedStringTagCapacity> stringTags{};
+    std::size_t stringTagCount{};
+    std::size_t stringCursor{};
+    /** Player-facing resource hash associated with each row in the caller's compacted span. */
+    std::array<std::uint32_t, layouts::kDefinitionCapacity> displayNameHashes{};
+    /** Rows with two different activity hashes stay unmapped instead of accepting scan order. */
+    std::array<std::uint8_t, layouts::kDefinitionCapacity> ambiguousMappings{};
+    /** Sorted unique resource hashes used to reject irrelevant string rows in logarithmic time. */
+    std::array<std::uint32_t, layouts::kDefinitionCapacity> targetHashes{};
+    std::size_t targetHashCount{};
+    std::vector<std::byte> activity{};
+    std::vector<std::byte> stringHeader{};
+    std::vector<std::byte> languageStrings{};
+    std::size_t activityReadFailures{};
+    std::size_t activityParseFailures{};
+    std::size_t definitionTagFailures{};
+    std::size_t mappingConflicts{};
+    std::size_t stringHeaderReadFailures{};
+    std::size_t stringHeaderParseFailures{};
+    std::size_t languageTagFailures{};
+    std::size_t stringHashFailures{};
+    std::size_t stringDataReadFailures{};
+    std::size_t stringDataParseFailures{};
+    std::size_t labelsRejected{};
+    std::size_t labelsPlaceholders{};
+    std::size_t assigned{};
+    std::size_t conflicts{};
+    bool activityTagOverflow{};
+    bool stringTagOverflow{};
+    bool targetHashesBuilt{};
+    bool activitiesScanned{};
+    bool stringsScanned{};
+    bool built{};
 };
 
 /** One pass of fixed storage, kept off the caller stack. */
@@ -99,6 +146,8 @@ struct Storage {
     /** Tick after which the collection stops waiting for the rows that have not read. */
     std::uint64_t resolveDeadlineTick{};
     std::vector<std::byte> blob{};
+    ActivityLabelStorage labels{};
+    ActivityTypeStorage activityTypes{};
     RosterStorage roster{};
     /** Resolved rows, moved to the front. The roster walk runs over exactly these. */
     std::size_t keptCount{};
@@ -141,6 +190,19 @@ void compact_rows(Storage& storage) noexcept;
  * @param storage Pass storage whose resolve state is cleared.
  */
 void rearm_resolve(Storage& storage) noexcept;
+
+/**
+ * Extracts localized labels for resolved scenario rows.
+ * @param source Installed package source.
+ * @param scratch Lock-owned reader storage.
+ * @param storage Label scan and read state.
+ * @param rows Scenario rows to annotate.
+ * @return True after all discovered tags are attempted.
+ */
+[[nodiscard]] bool build_activity_labels(const reader::Source& source,
+                                         reader::Scratch& scratch,
+                                         ActivityLabelStorage& storage,
+                                         std::span<layouts::Definition> rows) noexcept;
 
 /**
  * Reduces one descriptor's two schemas to the slot flag bits the wire body carries.

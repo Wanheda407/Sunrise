@@ -442,6 +442,8 @@
     <ClCompile Include="src\state\build_data\runtime\build_data_roster_runtime.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_build.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_collect.cpp" />
+    <ClCompile Include="src\client\content\scenarios\scenario_activity_labels.cpp" />
+    <ClCompile Include="src\client\content\scenarios\scenario_activity_types.cpp" />
     <ClCompile Include="src\client\content\spawn_sets\spawn_set_build.cpp" />
     <ClCompile Include="src\client\content\hash_names\hash_name_build.cpp" />
     <ClCompile Include="src\client\content\hash_names\hash_name_matcher.cpp" />
@@ -611,7 +613,10 @@
     <ClCompile Include="src\middleware\content\packages\reader\package_header.cpp" />
     <ClCompile Include="src\middleware\content\packages\tables\bubble_state_reader.cpp" />
     <ClCompile Include="src\middleware\content\packages\tables\definition_index_table.cpp" />
+    <ClCompile Include="src\middleware\content\packages\tables\activity_metadata_reader.cpp" />
+    <ClCompile Include="src\middleware\content\packages\tables\activity_type_mapping.cpp" />
     <ClCompile Include="src\middleware\content\packages\tables\item_definition_reader.cpp" />
+    <ClCompile Include="src\middleware\content\packages\tables\localized_string_reader.cpp" />
     <ClCompile Include="src\middleware\content\packages\tables\region_reader.cpp" />
     <ClCompile Include="src\middleware\content\packages\tables\roster_intersection.cpp" />
     <ClCompile Include="src\middleware\content\packages\tables\scenario_reader.cpp" />
@@ -1275,8 +1280,12 @@
     <ClInclude Include="src\middleware\content\packages\reader\package_table_cache.h" />
     <ClInclude Include="src\middleware\content\packages\tables\ability_pool_reader.h" />
     <ClInclude Include="src\middleware\content\packages\tables\bubble_state_reader.h" />
+    <ClInclude Include="src\middleware\content\packages\tables\activity_metadata_reader.h" />
+    <ClInclude Include="src\middleware\content\packages\tables\activity_type_mapping.h" />
+    <ClInclude Include="src\client\content\scenarios\activity_type_build.h" />
     <ClInclude Include="src\middleware\content\packages\tables\internal.h" />
     <ClInclude Include="src\middleware\content\packages\tables\items.h" />
+    <ClInclude Include="src\middleware\content\packages\tables\localized_string_reader.h" />
     <ClInclude Include="src\middleware\content\packages\tables\region_reader.h" />
     <ClInclude Include="src\middleware\content\packages\tables\roster_intersection.h" />
     <ClInclude Include="src\middleware\content\packages\tables\scenario_reader.h" />

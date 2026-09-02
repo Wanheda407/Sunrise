@@ -29,7 +29,7 @@ inline constexpr std::array<char, 8> kCacheMagic{'S', 'U', 'N', 'R', 'I', 'S', '
  * Bump it when a stored shape changes, and when the extraction filling it changes what it writes.
  * A cached row survives a code change, so a corrected walk keeps publishing the old rows.
  */
-inline constexpr std::uint32_t kCacheFormatVersion = 44;
+inline constexpr std::uint32_t kCacheFormatVersion = 46;
 /** Signed -1 on disk means there is no equipment slot. */
 inline constexpr std::int8_t kAbsentEquipmentSlot = -1;
 /** The standard 64-bit FNV-1a offset basis starts the payload checksum. */
@@ -259,11 +259,23 @@ struct SocketEntryTableRecord {
     std::array<std::uint8_t, socket_entry_lists::kEntryCapacity> kinds{};
 };
 
-/** Disk form of one destination's extracted bubble layout and roster groups. */
+/** Packed type identity, localized label, and direct/playlist evidence flags. */
+struct ActivityUseRecord {
+    std::uint32_t typeHash{};
+    std::array<char, scenarios::kActivityLabelCapacity> label{};
+    std::uint8_t labelLength{};
+    std::uint8_t sources{};
+};
+
+/** Disk form of a scenario, including its localized title and authored activity uses. */
 struct ScenarioRecord {
     std::array<char, scenarios::kNameCapacity> name{};
+    std::array<char, scenarios::kActivityLabelCapacity> activityLabel{};
     std::uint32_t tag{};
     std::uint8_t nameLength{};
+    std::uint8_t activityLabelLength{};
+    std::uint8_t activityUseCount{};
+    std::array<ActivityUseRecord, scenarios::kActivityUseCapacity> activityUses{};
     std::uint8_t bubbleCount{};
     std::uint8_t truncated{};
     std::uint8_t rosterGroupCount{};
@@ -272,7 +284,7 @@ struct ScenarioRecord {
     /** Groups published through the delta's per-bubble sub-blocks. */
     std::uint8_t bubbleGroupCount{};
     /** Must be zero, so the packed destination row always matches. */
-    std::array<std::uint8_t, 2> reserved{};
+    std::array<std::uint8_t, 1> reserved{};
     std::array<char, scenarios::kSpawnStemCapacity> spawnStem{};
     std::array<std::uint8_t, scenarios::kBubbleCapacity> bubbleStates{};
     /** Each bubble's own name hash, in the same order as the states. */
@@ -436,17 +448,20 @@ static_assert(sizeof(VendorInstalledRowRecord)
               == 2 * sizeof(std::uint16_t) + vendors::kInstalledRowStride);
 static_assert(sizeof(HashNameRecord)
               == hash_names::kNameLength + sizeof(std::uint32_t) + 4 * sizeof(std::uint8_t));
-static_assert(sizeof(ScenarioRecord)
-              == scenarios::kNameCapacity + sizeof(std::uint32_t) + 10 * sizeof(std::uint8_t)
-                     + scenarios::kSpawnStemCapacity
-                     + 2 * scenarios::kBubbleCapacity * sizeof(std::uint8_t)
-                     + scenarios::kBubbleCapacity * sizeof(std::uint32_t)
-                     + scenarios::kBubbleCapacity * sizeof(std::uint16_t)
-                     + (scenarios::kDestinationGroupCapacity
-                        + scenarios::kDestinationPackageCapacity
-                        + scenarios::kDestinationBubbleGroupCapacity)
-                           * sizeof(std::uint16_t)
-                     + scenarios::kDestinationBubbleGroupCapacity * scenarios::kBubbleMaskBytes);
+static_assert(sizeof(ActivityUseRecord)
+              == sizeof(std::uint32_t) + scenarios::kActivityLabelCapacity
+                     + 2 * sizeof(std::uint8_t));
+static_assert(
+    sizeof(ScenarioRecord)
+    == scenarios::kNameCapacity + scenarios::kActivityLabelCapacity + sizeof(std::uint32_t)
+           + 11 * sizeof(std::uint8_t) + scenarios::kActivityUseCapacity * sizeof(ActivityUseRecord)
+           + scenarios::kSpawnStemCapacity + 2 * scenarios::kBubbleCapacity * sizeof(std::uint8_t)
+           + scenarios::kBubbleCapacity * sizeof(std::uint32_t)
+           + scenarios::kBubbleCapacity * sizeof(std::uint16_t)
+           + (scenarios::kDestinationGroupCapacity + scenarios::kDestinationPackageCapacity
+              + scenarios::kDestinationBubbleGroupCapacity)
+                 * sizeof(std::uint16_t)
+           + scenarios::kDestinationBubbleGroupCapacity * scenarios::kBubbleMaskBytes);
 static_assert(sizeof(SpawnStemRecord)
               == spawn_sets::kStemNameCapacity + sizeof(std::uint32_t) + 3 * sizeof(std::uint16_t)
                      + 2 * sizeof(std::uint8_t));

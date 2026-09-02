@@ -17,6 +17,9 @@ Destiny 2 Offline Exploration Mod
 - Exploration Features (Fly, Noclip, Activity Override, ...)
 - Basic Inventory Management
 
+Activity Override also shows package-derived activity titles and known activity types when
+available. See [Activity metadata](docs/activity-metadata.md) for usage, data contracts, and tests.
+
 ## WIP
 
 This mod is a work in progress. Things might break or work in unexpected ways. There is also currently

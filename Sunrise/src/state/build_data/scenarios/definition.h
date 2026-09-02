@@ -21,6 +21,25 @@ inline constexpr std::size_t kBubbleCapacity = 64;
  * bytes wide, so a longer scenario name could never match.
  */
 inline constexpr std::size_t kNameCapacity = 40;
+/** English text capacity that keeps a titled row inside the picker's 96-byte label storage. */
+inline constexpr std::size_t kActivityLabelCapacity = 48;
+/** Headroom above the measured per-scenario type set, including playlist-derived uses. */
+inline constexpr std::size_t kActivityUseCapacity = 32;
+/** A directly named activity and a playlist ancestor are distinct evidence sources. */
+inline constexpr std::uint8_t kDirectActivityUse = 1;
+inline constexpr std::uint8_t kPlaylistActivityUse = 2;
+inline constexpr std::uint8_t kActivityUseSourceMask = kDirectActivityUse | kPlaylistActivityUse;
+
+/** Native type identity, optional length-delimited English text, and reference provenance. */
+struct ActivityUse {
+    std::uint32_t typeHash{};
+    std::array<char, kActivityLabelCapacity> label{};
+    std::uint8_t labelLength{};
+    /** Bitwise union of direct and playlist evidence; never a gameplay capability claim. */
+    std::uint8_t sources{};
+
+    bool operator==(const ActivityUse&) const = default;
+};
 /** The byte a bubble carries when its first slice-set state is enabled. */
 inline constexpr std::uint8_t kBubbleEnabledByte = 0x80;
 /** The byte every other bubble carries, including one with no readable state array. */
@@ -74,13 +93,19 @@ struct RosterGroup {
     std::array<std::uint16_t, kRosterSlotCapacity> slotIndices{};
 };
 
-/** One destination's bubble layout, reduced to what the activity messages publish. */
+/** One destination's shared metadata, bubble layout, and activity-message roster data. */
 struct Definition {
     /** Lowercase package name without its `:scenario_client` suffix. */
     std::array<char, kNameCapacity> name{};
+    /** Optional English title, length-delimited and never a lookup key. */
+    std::array<char, kActivityLabelCapacity> activityLabel{};
     /** Tag the layout was read from, kept so a stale cache can be told from a missing one. */
     std::uint32_t tag{};
     std::uint8_t nameLength{};
+    std::uint8_t activityLabelLength{};
+    /** Uses are unique and sorted by type hash. Empty means no classification was recovered. */
+    std::uint8_t activityUseCount{};
+    std::array<ActivityUse, kActivityUseCapacity> activityUses{};
     /** Used entries in the arrays below. */
     std::uint8_t bubbleCount{};
     /** Set when the scenario declared more bubbles than the wire array holds. */

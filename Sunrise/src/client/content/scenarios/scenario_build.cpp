@@ -74,7 +74,9 @@ void report(const Storage& storage,
 } // namespace
 
 /** Extracts every destination's bubble layout and roster from the installed packages, once. */
-bool build(const packages::reader::Source& source, packages::reader::Scratch& scratch) noexcept {
+bool build(const packages::reader::Source& source,
+           packages::reader::Scratch& scratch,
+           std::span<const std::byte> investmentRoot) noexcept {
     if (state::build_data::scenario_layouts_ready()) {
         return true;
     }
@@ -107,6 +109,17 @@ bool build(const packages::reader::Source& source, packages::reader::Scratch& sc
         }
         report(storage, storage.keptCount, 0, "collected");
         storage.compacted = true;
+    }
+    if (!build_activity_labels(
+            source, scratch, storage.labels, std::span(storage.rows).first(storage.keptCount))) {
+        return false;
+    }
+    if (!build_activity_types(source,
+                              scratch,
+                              investmentRoot,
+                              storage.activityTypes,
+                              std::span(storage.rows).first(storage.keptCount))) {
+        return false;
     }
     return walk_rosters(source, scratch, storage);
 }
