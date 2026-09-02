@@ -24,6 +24,7 @@ Destiny 2 Offline Exploration Mod
 - [ReGlitched/Sunrise](https://github.com/ReGlitched/Sunrise) (Entity Spawner)
 - [ItsReaver/Sunrise:feature/player-no-turnback-godmode](https://github.com/ltsReaver/Sunrise/tree/feature/player-no-turnback-godmode) (Godmode and Turnback avoidance)
 - [Nyxaraa/Sunrise-Nyxaraa:triumph-work-code](https://github.com/Nyxaraa/Sunrise-Nyxaraa/tree/triumph-work-code) (Triumphs + Titles + Season Pass + Artifact + Lore + Collectibles)
+- [pr/54](https://github.com/stanuwu/Sunrise/pull/54) (Weapon Editor)
 - [pr/80](https://github.com/stanuwu/Sunrise/pull/80) (Basic Roster)
 - [pr/85](https://github.com/stanuwu/Sunrise/pull/85) (Exotic Catalysts)
 - [pr/90](https://github.com/stanuwu/Sunrise/pull/90) (Faster Boot Times)

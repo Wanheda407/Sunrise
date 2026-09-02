@@ -21,6 +21,8 @@ Scratch g_scratch{};
 std::array<WorldRewardRequest, kWorldRewardQueueCapacity> g_worldRewards{};
 std::size_t g_worldRewardHead{};
 std::size_t g_worldRewardCount{};
+std::uint64_t g_accountGeneration{};
+
 /** Measured lifetime of the native item-acquisition flyout. */
 constexpr std::uint64_t kAcquisitionPresentationHoldMs = 8'000;
 constexpr std::uint8_t kWorldRewardFailureLimit = 8;
@@ -341,6 +343,37 @@ bool consume(const client::network::BapRequest& request,
     }
     ReleaseSRWLockExclusive(&g_lock);
     return success;
+}
+
+/** Queues the current account graph for every authenticated Family-4 session. */
+bool request_account_resync() noexcept {
+    AcquireSRWLockExclusive(&g_lock);
+    g_accountGeneration = g_accountGeneration == (std::numeric_limits<std::uint64_t>::max)()
+                              ? 1
+                              : g_accountGeneration + 1;
+    const std::uint64_t generation = g_accountGeneration;
+    std::size_t armed = 0;
+    for (auto& session : g_sessions) {
+        if (session.id == 0 || !session.authenticated || !session.queuez.family4Active) {
+            continue;
+        }
+        arm_account_resync_elsewhere(session);
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+
+    std::array<char, core::log::kLineCapacity> line{};
+    const int count = std::snprintf(line.data(),
+                                    line.size(),
+                                    "ev=queuez stage=editor_resync_arm result=%s generation=%llu peers=%zu",
+                                    armed != 0 ? "ok" : "idle",
+                                    static_cast<unsigned long long>(generation),
+                                    armed);
+    if (count > 0) {
+        core::log::write(core::log::Channel::server,
+                         armed != 0 ? core::log::Level::debug : core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
+    return armed != 0;
 }
 
 /** Securely erases every connection-owned nonce and transform buffer. */
