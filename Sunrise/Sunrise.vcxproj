@@ -93,6 +93,7 @@
     <None Include="vendor\imgui\LICENSE.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\client\content\entity_names\entity_name_cache.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\core\logging\log.cpp" />
     <ClCompile Include="src\core\logging\snapshot\log_snapshot_ring.cpp" />
@@ -220,7 +221,9 @@
     <ClCompile Include="src\client\ui\movement\movement_panel.cpp" />
     <ClCompile Include="src\client\movement\movement_settings_store.cpp" />
     <ClCompile Include="src\client\spawn\spawn_keybind_store.cpp" />
+    <ClCompile Include="src\client\spawn\population_settings_store.cpp" />
     <ClCompile Include="src\client\content\entity_names\entity_name_build.cpp" />
+    <ClCompile Include="src\client\content\placements\placement_extract.cpp" />
     <ClCompile Include="src\client\content\entity_names\localized_aliases.cpp" />
     <ClCompile Include="src\client\inactivity\inactivity_settings_store.cpp" />
     <ClCompile Include="src\client\hooks\inactivity\inactivity_override.cpp" />
@@ -868,6 +871,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="resources\resource.h" />
+    <ClInclude Include="src\client\content\entity_names\entity_name_cache.h" />
     <ClInclude Include="src\core\logging\log.h" />
     <ClInclude Include="src\core\logging\snapshot\snapshot.h" />
     <ClInclude Include="src\core\logging\snapshot\internal.h" />
@@ -936,7 +940,9 @@
     <ClInclude Include="src\client\runtime\runtime.h" />
     <ClInclude Include="src\client\movement\movement_settings_store.h" />
     <ClInclude Include="src\client\spawn\spawn_keybind_store.h" />
+    <ClInclude Include="src\client\spawn\population_settings_store.h" />
     <ClInclude Include="src\client\content\entity_names\entity_name_build.h" />
+    <ClInclude Include="src\client\content\placements\placement_extract.h" />
     <ClInclude Include="src\client\content\entity_names\localized_aliases.h" />
     <ClInclude Include="src\client\inactivity\inactivity_settings_store.h" />
     <ClInclude Include="src\client\hooks\inactivity\inactivity_override.h" />
