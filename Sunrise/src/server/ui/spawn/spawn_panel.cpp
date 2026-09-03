@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cfloat>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <imgui.h>
 #include <span>
 #include <string_view>
 #include <vector>
 
+#include "../../../client/content/entity_names/entity_name_cache.h"
 #include "../../../client/content/items/packages/internal.h"
 #include "../../../client/hooks/spawn/spawn_runtime.h"
 #include "../../../client/content/placements/placement_extract.h"
@@ -116,6 +119,12 @@ struct Candidate {
     ObjectType type{};
     bool named{};
     std::array<char, 224> label{};
+};
+
+struct EntityName {
+    std::uint32_t tag{};
+    std::array<char, 144> text{};
+    std::uint32_t order{};
 };
 
 struct Column {
@@ -255,7 +264,7 @@ void skip_space(std::string_view document, std::size_t& cursor) noexcept {
 }
 
 [[nodiscard]] bool load_names() noexcept {
-    g_names.clear();
+    std::vector<EntityName> parsed{};
     HMODULE module = nullptr;
     constexpr DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                             | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
@@ -315,6 +324,7 @@ void skip_space(std::string_view document, std::size_t& cursor) noexcept {
         return false;
     }
     ++cursor;
+    std::vector<EntityName> parsedEntries;
     while (cursor < document.size()) {
         skip_space(document, cursor);
         if (cursor < document.size() && document[cursor] == ',') {
@@ -330,9 +340,9 @@ void skip_space(std::string_view document, std::size_t& cursor) noexcept {
         }
         std::uint32_t tag = 0;
         const char* const end = tagText.data() + std::strlen(tagText.data());
-        const auto parsed = std::from_chars(tagText.data(), end, tag, 16);
+        const auto parseResult = std::from_chars(tagText.data(), end, tag, 16);
         skip_space(document, cursor);
-        if (parsed.ec != std::errc{} || parsed.ptr != end || cursor >= document.size()
+        if (parseResult.ec != std::errc{} || parseResult.ptr != end || cursor >= document.size()
             || document[cursor++] != ':') {
             return false;
         }
@@ -361,19 +371,41 @@ void skip_space(std::string_view document, std::size_t& cursor) noexcept {
                 return false;
             }
             if (name.text[0] != '\0') {
-                g_names.push_back(name);
+                parsedEntries.push_back(name);
             }
         }
     }
-    std::sort(g_names.begin(), g_names.end(), [](const EntityName& first, const EntityName& second) {
+    std::sort(parsedEntries.begin(), parsedEntries.end(), [](const EntityName& first, const EntityName& second) {
         return first.tag != second.tag ? first.tag < second.tag : first.order < second.order;
     });
+
+    if (parsedEntries.empty()) {
+        return false;
+    }
+
+    g_names.clear();
+    g_names.reserve(parsedEntries.size());
+    for (const EntityName& en : parsedEntries) {
+        state::build_data::entity_names::Name out{};
+        out.tag = en.tag;
+        const std::size_t len = std::strlen(en.text.data());
+        // Ensure we don't overflow the destination buffer
+        const std::size_t copyLen = (std::min)(len, out.text.size() ? out.text.size() - 1 : 0);
+        if (out.text.size() > 0) {
+            std::memset(out.text.data(), 0, out.text.size());
+            if (copyLen > 0) {
+                std::memcpy(out.text.data(), en.text.data(), copyLen);
+            }
+        }
+        out.length = static_cast<std::uint8_t>((std::min)(copyLen, static_cast<std::size_t>(255)));
+        g_names.push_back(out);
+    }
     return !g_names.empty();
 }
 
 [[nodiscard]] const char* name_of(std::uint32_t tag) noexcept {
     const auto found = std::lower_bound(
-        g_names.begin(), g_names.end(), tag, [](const EntityName& value, std::uint32_t wanted) {
+        g_names.begin(), g_names.end(), tag, [](const auto& value, std::uint32_t wanted) {
             return value.tag < wanted;
         });
     return found != g_names.end() && found->tag == tag ? found->text.data() : nullptr;
@@ -400,6 +432,10 @@ names_of(std::uint32_t tag) noexcept {
     return std::any_of(markers.begin(), markers.end(), [name](std::string_view marker) {
         return name.find(marker) != std::string_view::npos;
     });
+}
+
+[[nodiscard]] bool skipped_family(std::wstring_view family) noexcept {
+    return family.starts_with(L"w64_audio_") || family.starts_with(L"w64_ui_");
 }
 
 void family_text(std::wstring_view family, std::array<char, 96>& output) noexcept {
@@ -1031,7 +1067,7 @@ void publish_population_source() noexcept {
     }
     for (const Candidate& candidate : g_main.candidates) {
         const char* const name = name_of(candidate.tag);
-        if (candidate.type != kCombatantType || name == nullptr) {
+        if (candidate.type != static_cast<ObjectType>(kCombatantType) || name == nullptr) {
             continue;
         }
         if (!accepted_combatant(std::string_view(name))) {
@@ -1279,7 +1315,7 @@ void step_batch() noexcept {
     std::vector<std::uint32_t> combatants{};
     for (const Candidate& candidate : g_main.candidates) {
         const char* const name = name_of(candidate.tag);
-        if (candidate.type != kCombatantType || name == nullptr) {
+        if (candidate.type != static_cast<ObjectType>(kCombatantType) || name == nullptr) {
             continue;
         }
         const std::string_view text{name};
