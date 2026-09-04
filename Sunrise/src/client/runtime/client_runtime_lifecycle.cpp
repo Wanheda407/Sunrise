@@ -1,5 +1,6 @@
 #include "../../core/logging/log.h"
 #include "../content/investment/worker.h"
+#include "../diagnostics/entity_create_probe.h"
 #include "../hooks/assert_handler/assert_handler_lifecycle.h"
 #include "../hooks/bitmap/bitmap_hook_lifecycle.h"
 #include "../hooks/bootflow/bootflow_hook_lifecycle.h"
@@ -80,6 +81,7 @@ bool shutdown() noexcept {
     hooks::spawn::uninstall();
     hooks::teleport::uninstall();
     hooks::queuez::uninstall();
+    diagnostics::uninstall_entity_create_probe();
     if (!hooks::config_getter::uninstall()) {
         ReleaseSRWLockExclusive(&runtime::g_lock);
         return false;

@@ -29,6 +29,7 @@ Destiny 2 Offline Exploration Mod
 - [pr/80](https://github.com/stanuwu/Sunrise/pull/80) (Basic Roster)
 - [pr/85](https://github.com/stanuwu/Sunrise/pull/85) (Exotic Catalysts)
 - [pr/90](https://github.com/stanuwu/Sunrise/pull/90) (Faster Boot Times)
+- [pr/94](https://github.com/stanuwu/Sunrise/pull/94) (Fixes Bird Errors)
 
 ## WIP
 
@@ -66,7 +67,7 @@ To build from a command line, use the Developer PowerShell for VS 2026:
 
 1. Clone the repository
 ```powershell
-git clone https://github.com/stanuwu/Sunrise
+git clone https://github.com/Wanheda407/Sunrise
 cd Sunrise
 ```
 
@@ -81,7 +82,7 @@ Make sure you have `git`, `cmake`, `clang`, `ninja`, `llvm`, and `xwin` installe
 
 1. Clone the repository
 ```bash
-$ git clone https://github.com/stanuwu/Sunrise
+$ git clone https://github.com/Wanheda407/Sunrise
 $ cd Sunrise
 ```
 

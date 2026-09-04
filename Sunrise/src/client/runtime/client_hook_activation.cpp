@@ -11,6 +11,7 @@
 #include "../../core/ui/notice/ui_notice_overlay.h"
 #include "../content/bootstrap/bootstrap_token_publish.h"
 #include "../content/investment/worker.h"
+#include "../diagnostics/entity_create_probe.h"
 #include "../executable/image.h"
 #include "../hooks/assert_handler/assert_handler_lifecycle.h"
 #include "../hooks/bitmap/bitmap_hook_lifecycle.h"
@@ -165,6 +166,11 @@ void clear_game_targets() noexcept {
                      packageKeys ? core::log::Level::info : core::log::Level::warn,
                      packageKeys ? "ev=activate stage=package_keys result=ok"
                                  : "ev=activate stage=package_keys result=fail");
+    // Stocks the client's entity free-slot bitmap, which this host leaves entirely unstocked.
+    // The hook covers only the index allocator, whose two-argument shape was read out of its own
+    // body. The initialiser beside it is left alone: its fifth argument is passed on the stack,
+    // and a four-argument replacement black-screened the load.
+    (void)diagnostics::install_entity_create_probe();
     // Diagnostic capture reports its own outcome and never demotes this stage.
     (void)hooks::retail_log::install();
     (void)hooks::assert_handler::install();
