@@ -256,6 +256,9 @@ complete_exotic_catalyst(std::uint16_t itemDefinitionIndex,
  */
 [[nodiscard]] bool complete_exotic_catalyst_objectives(std::span<std::int32_t> values) noexcept;
 
+/** Projects mapped catalyst completion flags into their native account bank. */
+[[nodiscard]] bool complete_exotic_catalyst_flags(std::span<std::uint8_t> flags) noexcept;
+
 /**
  * Resolves the item row that supplies one socketed catalyst's native perks and stat changes.
  * @param itemDefinitionIndex Native weapon definition index.
