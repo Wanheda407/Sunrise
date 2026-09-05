@@ -69,33 +69,44 @@ struct Marker final {
     }
 }
 
-/** Requires every existing drive-path directory component to be ordinary, never a reparse point. */
-[[nodiscard]] bool ordinary_ancestry(const std::wstring& directory) noexcept {
+/** Names the first drive-path component which is not an ordinary directory. */
+[[nodiscard]] const char* ordinary_ancestry_reason(const std::wstring& directory) noexcept {
     if (directory.size() < 3U || directory[1] != L':' || directory[2] != L'\\') {
-        return false;
+        return "path_shape";
     }
-    if (!ordinary_directory(directory.substr(0, 3U).c_str())) {
-        return false;
-    }
+    const bool rootOrdinary = ordinary_directory(directory.substr(0, 3U).c_str());
     std::size_t cursor = 3U;
     while (cursor < directory.size()) {
         const std::size_t separator = directory.find(L'\\', cursor);
         const std::size_t end = separator == std::wstring::npos ? directory.size() : separator;
         const std::wstring prefix = directory.substr(0, end);
         if (!ordinary_directory(prefix.c_str())) {
-            return false;
+            return "ancestor";
         }
         if (separator == std::wstring::npos) {
             break;
         }
         cursor = separator + 1U;
     }
-    return true;
+    return rootOrdinary ? "ready" : "drive_root";
+}
+
+/** Wine maps its synthetic drive root as a reparse point; real path components remain checked. */
+[[nodiscard]] bool ordinary_ancestry_allowed(const char* reason) noexcept {
+    if (std::string_view(reason) == "ready") {
+        return true;
+    }
+    if (std::string_view(reason) != "drive_root") {
+        return false;
+    }
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    return ntdll != nullptr && GetProcAddress(ntdll, "wine_get_version") != nullptr;
 }
 
 /** Resolves one existing ordinary directory and rejects reparse points in every ancestor. */
 [[nodiscard]] bool canonical_directory(const wchar_t* input, std::wstring& output) noexcept {
-    return full_path(input, output) && ordinary_ancestry(output);
+    return full_path(input, output)
+           && ordinary_ancestry_allowed(ordinary_ancestry_reason(output));
 }
 
 /** Compares two complete Windows path components without locale-sensitive folding. */
