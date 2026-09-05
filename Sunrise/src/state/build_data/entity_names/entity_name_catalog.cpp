@@ -1,14 +1,17 @@
 #include "entity_name_catalog.h"
 
 #include <algorithm>
+#include <mutex>
+#include <shared_mutex>
 #include <string_view>
 
 #include "../table.h"
+#include "core/threading/srw_lock.h"
 
 namespace sunrise::state::build_data::entity_names {
 namespace {
 
-Lock g_lock;
+core::threading::SrwLock g_lock{};
 Table<Name, kNameCapacity> g_names;
 
 [[nodiscard]] std::string_view text_of(const Name& name) noexcept {
@@ -36,7 +39,7 @@ Table<Name, kNameCapacity> g_names;
 } // namespace
 
 void clear() noexcept {
-    const Lock::Exclusive guard(g_lock);
+    const std::lock_guard lock(g_lock);
     g_names.clear();
 }
 
@@ -56,13 +59,13 @@ bool replace(std::span<const Name> names) noexcept {
     if (!valid(names)) {
         return false;
     }
-    const Lock::Exclusive guard(g_lock);
+    const std::lock_guard lock(g_lock);
     return g_names.replace(names);
 }
 
 bool find(std::uint32_t tag, Name& name) noexcept {
     name = {};
-    const Lock::Shared guard(g_lock);
+    const std::shared_lock lock(g_lock);
     const std::span<const Name> rows = g_names.rows();
     const auto found = std::lower_bound(rows.begin(), rows.end(), tag, [](const Name& row,
                                                                          std::uint32_t wanted) {
@@ -76,12 +79,12 @@ bool find(std::uint32_t tag, Name& name) noexcept {
 }
 
 bool snapshot(std::span<Name> output, std::size_t& count) noexcept {
-    const Lock::Shared guard(g_lock);
+    const std::shared_lock lock(g_lock);
     return g_names.snapshot(output, count);
 }
 
 std::size_t count() noexcept {
-    const Lock::Shared guard(g_lock);
+    const std::shared_lock lock(g_lock);
     return g_names.count();
 }
 

@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 
 #include "../../core/logging/log.h"
+#include "../../middleware/encoding/bit_reader.h"
 #include "../../middleware/web_service/messages/opcode1801.h"
 #include "../../middleware/web_service/messages/opcode1821.h"
 #include "../../middleware/web_service/messages/opcode1901.h"
@@ -16,11 +18,15 @@
 #include "../../middleware/web_service/messages/opcode503.h"
 #include "../../middleware/web_service/messages/opcode504.h"
 #include "../../middleware/web_service/messages/opcode601/opcode601_codec.h"
+#include "../../middleware/web_service/messages/opcode701/opcode701_codec.h"
+#include "../../middleware/web_service/messages/opcode702.h"
 #include "../../middleware/web_service/messages/opcode801.h"
 #include "../../middleware/web_service/messages/opcode901/opcode901_codec.h"
+#include "../../middleware/web_service/messages/opcode904/opcode904_codec.h"
 #include "../../middleware/web_service/messages/opcode903.h"
 #include "../../middleware/web_service/web_service_envelope.h"
 #include "../../state/account/account_state.h"
+#include "../../state/activity/membership/activity_membership_query.h"
 #include "../../state/progression/seasonal_experience.h"
 #include "../../state/runtime/runtime.h"
 #include "opcode_routes.h"
@@ -70,6 +76,48 @@ constexpr std::int32_t kArtifactResetGlimmerCost = 20'000;
     return std::chrono::duration_cast<std::chrono::seconds>(sinceEpoch).count();
 }
 
+/** Issues a strictly increasing family-5 clock, including multiple requests in one second. */
+[[nodiscard]] std::uint64_t next_family5_clock() noexcept {
+    static std::atomic<std::uint64_t> issued{0};
+    const auto wall = static_cast<std::uint64_t>(server_clock_seconds());
+    std::uint64_t previous = issued.load(std::memory_order_relaxed);
+    std::uint64_t next = 0;
+    do {
+        next = wall > previous ? wall : previous + 1;
+    } while (!issued.compare_exchange_weak(previous, next, std::memory_order_relaxed));
+    return next;
+}
+
+/** Records the authoritative world state carried by the client's character write-back. */
+void note_character_writeback(const middleware::web_service::Message& message) noexcept {
+    namespace writeback = middleware::web_service::messages::opcode702;
+    writeback::Request request{};
+    const bool parsed = writeback::parse_request(message, request);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=activity stage=writeback result=%s world_state=%u",
+                                      parsed ? "ok" : "unparsed",
+                                      static_cast<unsigned>(request.worldState));
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+    if (parsed) {
+        state::activity::membership::note_client_writeback(request.worldState
+                                                           == writeback::kInWorld);
+    }
+}
+
+/** @return True when a purchase names the seasonal artifact vendor, which is answered here. */
+[[nodiscard]] bool names_artifact_vendor(const middleware::web_service::Message& message) noexcept {
+    namespace purchase_codec = middleware::web_service::messages::opcode901;
+    purchase_codec::Request purchase{};
+    return purchase_codec::parse_request(message, purchase)
+           && purchase.vendorIndex == kArtifactVendorIndex;
+}
+
 /**
  * Refuses one vendor purchase and answers it.
  * No award, cost or stock rule exists yet, so no purchase can succeed. The refusal must still be
@@ -85,18 +133,14 @@ constexpr std::int32_t kArtifactResetGlimmerCost = 20'000;
     namespace purchase_codec = middleware::web_service::messages::opcode901;
     purchase_codec::Request purchase;
     const bool parsed = purchase_codec::parse_request(message, purchase);
-    // The clock verdict is logged, never acted on. Nothing can pass while the route refuses.
-    const auto policy = purchase_codec::check_clock(purchase, server_clock_seconds());
     std::array<char, kPurchaseLineCapacity> line{};
     const int length =
-        parsed ? std::snprintf(
-                     line.data(),
-                     line.size(),
-                     "ev=ws901 stage=purchase result=refuse vendor=%d sale=%d present=%u policy=%s",
-                     static_cast<int>(purchase.vendorIndex),
-                     static_cast<int>(purchase.saleIndex),
-                     purchase.hasClock ? 1U : 0U,
-                     purchase_codec::clock_policy_name(policy))
+        parsed ? std::snprintf(line.data(),
+                               line.size(),
+                               "ev=ws901 stage=purchase result=refuse vendor=%d sale=%d present=%u",
+                               static_cast<int>(purchase.vendorIndex),
+                               static_cast<int>(purchase.saleIndex),
+                               purchase.hasClock ? 1U : 0U)
                : std::snprintf(line.data(),
                                line.size(),
                                "ev=ws901 stage=purchase result=refuse reason=parse");
@@ -160,11 +204,9 @@ constexpr std::int32_t kArtifactResetGlimmerCost = 20'000;
     const int length =
         std::snprintf(line.data(),
                       line.size(),
-                      "ev=ws901 stage=artifact result=ok vendor=%d sale=%d policy=%s",
+                      "ev=ws901 stage=artifact result=ok vendor=%d sale=%d",
                       static_cast<int>(purchase.vendorIndex),
-                      static_cast<int>(purchase.saleIndex),
-                      purchase_codec::clock_policy_name(
-                          purchase_codec::check_clock(purchase, server_clock_seconds())));
+                      static_cast<int>(purchase.saleIndex));
     if (length > 0) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::info,
@@ -210,6 +252,122 @@ bool encode_echo(const middleware::web_service::Message& message,
         message, ws::ResponseShape::generic, ws::StatusResponse{}, response, written);
 }
 
+/** Narrow semantic result from the prefix of reflected WS-701 schema 0x80807603. */
+struct ProfileSetupMarker {
+    bool present{};
+    bool completed{};
+};
+
+/** Reads the presence bit that precedes every optional WS-701 schema node. */
+[[nodiscard]] bool read_ws701_presence(middleware::encoding::bits::Reader& reader,
+                                       bool& present) noexcept {
+    std::uint64_t value = 0;
+    if (!reader.read(1, value)) {
+        return false;
+    }
+    present = value != 0;
+    return true;
+}
+
+/** Consumes one optional fixed-width field without retaining it. */
+[[nodiscard]] bool skip_ws701_optional(middleware::encoding::bits::Reader& reader,
+                                       std::size_t widthBits) noexcept {
+    bool present = false;
+    return read_ws701_presence(reader, present) && (!present || reader.skip(widthBits));
+}
+
+/**
+ * Reads only enough of WS-701 schema 0x80807603 to reach preference path 0.1.1.0.
+ *
+ * PR #71 maps that first preference scalar as the one-bit profile-setup marker. Everything after
+ * it belongs to the broader settings-write implementation and is deliberately left to that work.
+ * This function therefore validates the complete prefix, not the remainder of the request.
+ */
+[[nodiscard]] bool parse_profile_setup_marker(const middleware::web_service::Message& message,
+                                              ProfileSetupMarker& output) noexcept {
+    output = {};
+    if (message.opcode != middleware::web_service::messages::opcode701::kOpcode) {
+        return false;
+    }
+
+    middleware::encoding::bits::Reader reader(message.payload);
+    bool present = false;
+
+    // 0.0? client metadata.
+    if (!read_ws701_presence(reader, present)) {
+        return false;
+    }
+    if (present) {
+        // 0.0.0? [128] optional 64-bit publicity expiries.
+        bool publicityPresent = false;
+        if (!read_ws701_presence(reader, publicityPresent)) {
+            return false;
+        }
+        if (publicityPresent) {
+            for (std::size_t index = 0; index < 128; ++index) {
+                if (!skip_ws701_optional(reader, 64)) {
+                    return false;
+                }
+            }
+        }
+
+        // 0.0.1? [13] required 32-bit seen-message values.
+        bool seenMessagesPresent = false;
+        if (!read_ws701_presence(reader, seenMessagesPresent)
+            || (seenMessagesPresent && !reader.skip(13U * 32U))) {
+            return false;
+        }
+    }
+
+    // 0.1? account data.
+    bool accountPresent = false;
+    if (!read_ws701_presence(reader, accountPresent)) {
+        return false;
+    }
+    if (!accountPresent) {
+        return true;
+    }
+
+    // 0.1.0? [2] optional calibration vectors, each containing two required real32 values.
+    bool calibrationPresent = false;
+    if (!read_ws701_presence(reader, calibrationPresent)) {
+        return false;
+    }
+    if (calibrationPresent) {
+        for (std::size_t index = 0; index < 2; ++index) {
+            bool vectorPresent = false;
+            if (!read_ws701_presence(reader, vectorPresent)
+                || (vectorPresent && !reader.skip(2U * 32U))) {
+                return false;
+            }
+        }
+    }
+
+    // 0.1.1? preference record.
+    bool preferencesPresent = false;
+    if (!read_ws701_presence(reader, preferencesPresent)) {
+        return false;
+    }
+    if (!preferencesPresent) {
+        return true;
+    }
+
+    // 0.1.1.0? one-bit profile-setup marker.
+    if (!read_ws701_presence(reader, output.present)) {
+        return false;
+    }
+    if (!output.present) {
+        return true;
+    }
+
+    std::uint64_t completed = 0;
+    if (!reader.read(1, completed)) {
+        return false;
+    }
+    output.completed = completed != 0;
+    return true;
+}
+
 bool encode_resident_dependent_refusal(std::span<const std::byte> request,
                                        std::span<std::byte> response,
                                        std::size_t& written,
@@ -252,10 +410,14 @@ bool consume(std::span<const std::byte> request,
             core::log::Channel::server, core::log::Level::warn, "ev=ws stage=parse result=fail");
         return false;
     }
+    if (message.opcode == middleware::web_service::messages::opcode702::kOpcode) {
+        note_character_writeback(message);
+    }
     if (message.opcode == middleware::web_service::messages::opcode205::kOpcode) {
-        const auto investment = state::investment_snapshot();
-        return middleware::web_service::messages::opcode205::encode_response(
-                   message, investment, response, written)
+        state::InvestmentState investment{};
+        return (state::investment_snapshot(investment)
+                && middleware::web_service::messages::opcode205::encode_response(
+                    message, investment, next_family5_clock(), response, written))
                || encode_echo(message, response, written);
     }
 
@@ -268,9 +430,10 @@ bool consume(std::span<const std::byte> request,
         if (!bootstrap.hasPrimarySoid) {
             bootstrap.primarySoid = state::account_snapshot().primarySoid;
         }
-        const auto investment = state::investment_snapshot();
-        if (!parsed || !middleware::web_service::messages::opcode503::encode_response(
-                message, bootstrap, investment, response, written)) {
+        state::InvestmentState investment{};
+        if (!parsed || !state::investment_snapshot(investment)
+            || !middleware::web_service::messages::opcode503::encode_response(
+                message, bootstrap, investment, next_family5_clock(), response, written)) {
             return encode_echo(message, response, written);
         }
         if (bootstrap.hasPrimarySoid && !state::set_primary_soid(bootstrap.primarySoid)) {
@@ -290,8 +453,11 @@ bool consume(std::span<const std::byte> request,
                || encode_echo(message, response, written);
     }
 
-    // Runs before the shared response-shape path, which would answer the success status.
-    if (message.opcode == middleware::web_service::messages::opcode901::kOpcode) {
+    // The artifact vendor is answered here. Every other vendor purchase falls through to the
+    // shared response-shape path, which runs the action and answers its status: an action that
+    // prepared no mutation is answered with the refused code.
+    if (message.opcode == middleware::web_service::messages::opcode901::kOpcode
+        && names_artifact_vendor(message)) {
         return purchase_artifact_mod(message, response, written, outcome)
                || refuse_purchase(message, response, written)
                || encode_echo(message, response, written);
@@ -310,9 +476,11 @@ bool consume(std::span<const std::byte> request,
         && middleware::web_service::messages::opcode206::parse_request(message, subscription);
 
     // The action runs before its reply is encoded, because the reply reports whether it worked.
-    // An action fills the outcome only once it has prepared its whole transition, so an outcome
-    // still empty afterwards is that action refusing the request. Nothing is published here.
+    // Most actions fill the outcome only after preparing a whole transition. WS-701 also accepts
+    // a valid no-op heartbeat, so that one success is tracked separately from mutation presence.
     bool dispatched = true;
+    bool acceptedWithoutMutation = false;
+    bool profileSetupRefused = false;
     if (message.opcode == middleware::web_service::messages::opcode1801::kOpcode) {
         claim_record(message, outcome);
     } else if (message.opcode == middleware::web_service::messages::opcode504::kOpcode) {
@@ -333,10 +501,35 @@ bool consume(std::span<const std::byte> request,
         mutate_equipped_socket_plug(message, outcome);
     } else if (message.opcode == kItemStateOpcode) {
         mutate_item_state(message, outcome);
+    } else if (message.opcode == middleware::web_service::messages::opcode701::kOpcode) {
+        const state::SettingsUpdateDisposition disposition = mutate_settings(message, outcome);
+        acceptedWithoutMutation = disposition == state::SettingsUpdateDisposition::acceptedNoChange;
+        // The completion marker is applied here. The shared status path below reports the result.
+        ProfileSetupMarker marker{};
+        const bool parsed = parse_profile_setup_marker(message, marker);
+        if (!parsed) {
+            // Preserve Sunrise's existing WS-701 success behavior outside this narrow feature.
+            // PR #71 owns complete settings-write validation and can later subsume this prefix.
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=ws701 stage=profile_setup result=ignored reason=prefix_parse");
+        } else if (marker.present && marker.completed) {
+            if (!state::complete_profile_setup()) {
+                profileSetupRefused = true;
+            } else {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::info,
+                                 "ev=ws701 stage=profile_setup result=complete marker=1");
+            }
+        }
     } else if (message.opcode == kItemAcquisitionOpcode) {
         acquire_item(message, outcome);
     } else if (message.opcode == middleware::web_service::messages::opcode2400::kOpcode) {
         claim_season_pass_reward(message, outcome);
+    } else if (message.opcode == middleware::web_service::messages::opcode901::kOpcode) {
+        purchase_item(message, outcome);
+    } else if (message.opcode == middleware::web_service::messages::opcode904::kOpcode) {
+        acquire_quest(message, outcome);
     } else {
         dispatched = false;
     }
@@ -346,7 +539,7 @@ bool consume(std::span<const std::byte> request,
     middleware::web_service::ResponseShape shape{};
     resolve_response_shape(message.opcode, shape);
     middleware::web_service::StatusResponse status{};
-    if (dispatched && !prepared) {
+    if ((dispatched && !prepared && !acceptedWithoutMutation) || profileSetupRefused) {
         status.code = kRefusedStatus;
     }
     if (!middleware::web_service::encode_response(message, shape, status, response, written)) {

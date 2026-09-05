@@ -2,7 +2,7 @@
 /.idea/
 /.vscode/
 /.direnv/
-/.xwin-cache/
+/.xwin-cache
 /.cache/
 *.user
 *.suo
@@ -10,7 +10,10 @@
 *.sln.docstates
 *.aps
 *.log
+/Sunrise/build/
 
 # CMake build files
 /build/
+/build-merge/
+/build-resolved/
 /out/

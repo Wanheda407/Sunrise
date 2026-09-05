@@ -51,6 +51,9 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasPort = false;
     bool hasReserve = false;
     bool hasJoinGrant = false;
+    bool hasHoldLaunchCinematic = false;
+    bool hasLeaseHighWater = false;
+    bool hasIgnoreRelease = false;
     for (;;) {
         std::string_view key;
         if (!string(key) || !consume(':')) {
@@ -106,6 +109,24 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
             }
             candidate.clientJoinGrantCount = static_cast<std::uint16_t>(value);
             hasJoinGrant = true;
+        } else if (key == "hold_launch_cinematic") {
+            if (hasHoldLaunchCinematic || !boolean(candidate.holdLaunchCinematic)) {
+                return false;
+            }
+            hasHoldLaunchCinematic = true;
+        } else if (key == "client_lease_high_water") {
+            std::uint64_t value = 0;
+            if (hasLeaseHighWater || !unsigned_integer(value)
+                || value > (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+            candidate.clientLeaseHighWater = static_cast<std::uint16_t>(value);
+            hasLeaseHighWater = true;
+        } else if (key == "ignore_client_slot_release") {
+            if (hasIgnoreRelease || !boolean(candidate.ignoreClientSlotRelease)) {
+                return false;
+            }
+            hasIgnoreRelease = true;
         } else if (!skip_value(0)) {
             return false;
         }

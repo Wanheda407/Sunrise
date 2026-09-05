@@ -46,13 +46,10 @@ bool parse_request(const Message& message, Request& request) noexcept {
         request.flags = static_cast<std::uint32_t>(encodedFlags - kValueBias);
     }
 
-    if (!read || instancePresent == 0 || instanceSoid == 0 || definitionPresent == 0
-        || encodedFlags < kValueBias || padding != 0
-        || !state::account::inventory::valid_item_state(
-            static_cast<std::uint32_t>(encodedFlags - kValueBias))) {
-        return false;
-    }
-    return true;
+    return read && instancePresent != 0 && instanceSoid != 0 && definitionPresent != 0
+           && encodedFlags >= kValueBias && padding == 0
+           && state::account::inventory::valid_item_state(
+               static_cast<std::uint32_t>(encodedFlags - kValueBias));
 }
 
 } // namespace sunrise::middleware::web_service::messages::opcode406

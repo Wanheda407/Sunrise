@@ -59,13 +59,42 @@ inline constexpr std::size_t kProfileActionSourceCapacity = 100;
 /** Runtime-owned SOIDs for profile stacks use a namespace separate from created item instances. */
 inline constexpr std::uint64_t kFirstProfileItemInstanceSoid = 0x5000000000000001ULL;
 /**
- * The 16 supported character equipment buckets reserve 151 native rows in this build. One row
-
- * * per semantic slot can be equipped, leaving at most 135 simultaneously unequipped instances.
+ * 151 native rows minus the 16 equipped rows leaves 135 unequipped item rows.
  */
 inline constexpr std::size_t kCharacterItemCapacity = 135;
 /** Runtime-owned non-instanced character stacks. */
 inline constexpr std::size_t kCharacterStackCapacity = 32;
+
+/**
+ * Definition hash of the real, non-equippable "Emotes" collection item. The Client opens its own
+ * wheel-configuration screen for this exact item once it is equipped with valid socket data.
+ */
+inline constexpr std::uint32_t kEmoteCollectionDefinitionHash = 3183180185U;
+/** Ordinary socket lane count the "Emotes" collection item's real content declares. */
+inline constexpr std::size_t kEmoteCollectionSocketLaneCount = 4;
+/**
+ * Native equipment slot the "Emotes" collection item is equipped under, in place of the individual
+ * emote it replaces. Its own real content carries no native equipment-slot mapping at all, unlike
+ * every other character-scoped item, so callers that need one for this item specifically fall back
+ * to this constant through resolve_native_equipment_slot() below.
+ */
+inline constexpr std::uint8_t kEmoteCollectionNativeEquipmentSlot =
+    static_cast<std::uint8_t>(EquipmentSlot::emote);
+
+/**
+ * Resolves the native equipment slot a configured item detail occupies.
+ * Every character-scoped item declares its own native slot except the "Emotes" collection item
+ * (kEmoteCollectionDefinitionHash), the one item whose real content has none. Any other item
+ * missing a native slot is rejected instead of silently aliasing this fallback.
+ * @param definitionHash Authored item definition hash being resolved.
+ * @param detailEquipmentSlot The installed item detail's own native slot, if it declares one.
+ * @param nativeSlot Receives the resolved native slot on success.
+ * @return True when the item declares its own non-negative slot, or is the Emotes collection item.
+ */
+[[nodiscard]] bool
+resolve_native_equipment_slot(std::uint32_t definitionHash,
+                              const std::optional<std::int8_t>& detailEquipmentSlot,
+                              std::uint8_t& nativeSlot) noexcept;
 
 /** One authored account-wide item, placed by the inventory bucket its definition names. */
 struct ProfileItem {

@@ -4,6 +4,7 @@
 
 #include "../../../core/ui/modules/registry/ui_module_registry.h"
 #include "../../../core/ui/modules/ui_module_descriptor.h"
+#include "../activity_host/activity_host_panel.h"
 #include "../activity_override/activity_override_panel.h"
 #include "../spawn/spawn_panel.h"
 #include "../weapon_editor/weapon_editor_panel.h"
@@ -19,8 +20,13 @@ constexpr std::string_view kSpawnStableId = "server.spawn";
 constexpr std::string_view kSpawnDisplayName = "Spawn";
 constexpr std::string_view kWeaponEditorStableId = "server.weapon_editor";
 constexpr std::string_view kWeaponEditorDisplayName = "Weapon Editor";
+/** A namespaced stable ID for the Activity Host page. */
+constexpr std::string_view kHostStableId = "server.activity_host";
+/** Short menu label for the Activity Host page. */
+constexpr std::string_view kHostDisplayName = "Activity Host";
 
 core::ui::modules::registry::PageRegistration g_overridePage;
+core::ui::modules::registry::PageRegistration g_hostPage;
 core::ui::modules::registry::PageRegistration g_spawnPage;
 core::ui::modules::registry::PageRegistration g_weaponEditorPage;
 
@@ -32,6 +38,15 @@ bool initialize() noexcept {
                                 kOverrideStableId,
                                 kOverrideDisplayName,
                                 &activity_override::draw)) {
+        return false;
+    }
+    if (!g_hostPage.acquire(core::ui::modules::Owner::server,
+                            kHostStableId,
+                            kHostDisplayName,
+                            &activity_host::draw,
+                            nullptr,
+                            &activity_host::draw_windows)) {
+        g_overridePage.release();
         return false;
     }
     if (!g_spawnPage.acquire(core::ui::modules::Owner::server,
@@ -53,6 +68,7 @@ bool initialize() noexcept {
 
 /** Removes the Server module from the Core UI registry. */
 void shutdown() noexcept {
+    g_hostPage.release();
     g_overridePage.release();
     g_spawnPage.release();
     g_weaponEditorPage.release();

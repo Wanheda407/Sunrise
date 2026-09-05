@@ -10,6 +10,12 @@
 #include "../record_claims/record_claims.h"
 #include "state.h"
 
+namespace sunrise::state::account::settings {
+
+struct SettingsDelta;
+
+} // namespace sunrise::state::account::settings
+
 namespace sunrise::state {
 
 /**
@@ -17,6 +23,18 @@ namespace sunrise::state {
  * Currency, material, and consumable profile rows remain canonically non-instanced.
  */
 [[nodiscard]] bool ensure_profile_item_identities() noexcept;
+
+/** Why one attempt to canonicalize the "Emotes" collection item ended. */
+enum class EmoteCollectionOutcome : std::uint8_t {
+    /** Every character carries a sound collection item, either already or as of this call. */
+    ready,
+    /** The build data or account this reads is not published yet, so a retry is still owed. */
+    notReady,
+    /** The installed content does not carry the item this expects, so it can never be applied. */
+    unsupported,
+    /** The item could not be placed, so no character was changed and a retry is still owed. */
+    failed,
+};
 
 /**
  * Grants each character the other 2 subclasses of its equipped subclass's class, placing missing
@@ -60,6 +78,19 @@ struct PendingSubclassSelection {
 /** Commits a prepared subclass selection behind the exact full-character staleness guard. */
 [[nodiscard]] bool commit_subclass_selection(PendingSubclassSelection& mutation) noexcept;
 
+/**
+ * Equips each character with the "Emotes" collection item (hash 3183180185) in the emote slot, in
+ * place of an individual emote. The stock client opens its own wheel-configuration screen for this
+ * item; its 4 ordinary sockets seed default lanes from the item's real plug pool so the wheel has
+ * something in every slot the first time it opens.
+ * Idempotent, and safe to call from more than one boundary: a character already carrying a sound
+ * copy is left alone, and one whose sockets no longer resolve is repaired in place, keeping its
+ * instance identity and every field this does not own.
+ * The outcome distinguishes "nothing to do" from "could not be done", so a caller never records
+ * the account as canonical on the strength of a prerequisite that was never met.
+ */
+[[nodiscard]] EmoteCollectionOutcome ensure_character_emote_collection() noexcept;
+
 /** Direction of one checked character equipment mutation. */
 enum class EquipmentMutationKind : std::uint8_t {
     none,
@@ -89,8 +120,7 @@ struct PendingEquipmentSwap {
 struct PendingItemAcquisition {
     CharacterState beforeCharacter{};
     CharacterState afterCharacter{};
-    /** Exact profile material view observed before and after charging the native requirement set.
-     */
+    /** Profile material view, before and after charging the native requirement set. */
     std::array<account::inventory::ProfileItem, account::inventory::kProfileItemCapacity>
         beforeProfileItems{};
     std::array<account::inventory::ProfileItem, account::inventory::kProfileItemCapacity>
@@ -115,6 +145,15 @@ struct PendingItemAcquisition {
     bool prepared{};
 };
 
+/** One profile row an exchange changed, named the way the account's change ring names it. */
+struct ProfileStackChange {
+    std::int32_t mutationSerial{};
+    std::int32_t afterQuantity{};
+};
+
+/** Rows one exchange may announce. Shader recycling announces two: Glimmer and Legendary Shards. */
+inline constexpr std::size_t kProfileStackChangeCapacity = 4;
+
 /** Prepared account-profile stack insertion kept private until its reply and account upsert fit. */
 struct PendingProfileItemAcquisition {
     /** Exact profile inventory observed while preparing the mutation. */
@@ -138,6 +177,14 @@ struct PendingProfileItemAcquisition {
     std::uint16_t collectibleIndex{};
     std::uint8_t bucketId{};
     std::uint8_t materialRequirementCount{};
+    /**
+     * Rows this mutation announces to the account's change ring, which is what draws the floating
+     * "+5 Legendary Shards" the Client shows. Empty for an ordinary acquisition, which announces
+     * its one acquired row instead; non-empty marks this an exchange, whose quantities move by
+     * more than one and whose row count is not fixed at one.
+     */
+    std::array<ProfileStackChange, kProfileStackChangeCapacity> changes{};
+    std::size_t changeCount{};
     /** True only for installed profile mod/shader rows materialized as Family-4 residents. */
     bool actionSource{};
     bool appended{};
@@ -336,6 +383,31 @@ struct ArtifactResetResult {
     std::size_t instanceCount{};
 };
 
+/** Prepared current-activity change for the selected character, private until it publishes. */
+struct PendingCurrentActivity {
+    CharacterState beforeCharacter{};
+    CharacterState afterCharacter{};
+    std::uint64_t characterSoid{};
+    std::size_t characterIndex{};
+    std::uint16_t activityIndex{};
+    bool prepared{};
+};
+
+/** Result of validating one sparse settings writeback against authoritative State. */
+enum class SettingsUpdateDisposition : std::uint8_t {
+    rejected,
+    acceptedNoChange,
+    preparedMutation,
+};
+
+/** Complete checked settings before/after images held until the BAP transaction commits. */
+struct PendingSettingsUpdate {
+    account::settings::AccountSettings beforeSettings{};
+    account::settings::AccountSettings afterSettings{};
+    std::uint64_t accountSoid{};
+    bool prepared{};
+};
+
 /**
  * Loads cached build data and generates secrets with Sunrise's authored activity defaults.
  * @param module Loaded Sunrise module, or null to disable disk persistence.
@@ -365,8 +437,24 @@ void shutdown() noexcept;
 
 [[nodiscard]] bool publish_bootstrap_token(std::span<const std::byte> token) noexcept;
 
+/**
+ * Records when the account signed in.
+ * Every character record publishes this as its last applied daily and weekly reset.
+ * @param seconds Unix seconds taken when the SignOn success is answered.
+ */
+void publish_sign_in_time(std::uint64_t seconds) noexcept;
+
 /** @return Immutable generated BAP session fields. */
 [[nodiscard]] const BapState& bap() noexcept;
+
+/**
+ * Generates one connection's own secure-channel material.
+ * Two links sharing a key and a starting nonce would encrypt different plaintexts under the same
+ * pair, so every accepted connection gets its own.
+ * @param output Cleared, then filled with a fresh nonce, session key and envelope IV.
+ * @return True when the system generated every byte.
+ */
+[[nodiscard]] bool new_bap_session(BapState& output) noexcept;
 
 /**
  * Stores the active nonzero account key when the account remains complete.
@@ -374,6 +462,14 @@ void shutdown() noexcept;
  * @return False when the key or resulting account State is invalid.
  */
 [[nodiscard]] bool set_primary_soid(std::uint64_t primarySoid) noexcept;
+
+/**
+ * Permanently closes the process-local one-time profile-setup gate for the active account.
+ *
+ * The transition is monotonic: repeated profile-setting writes after completion are harmless.
+ * @return False only when no complete active account can be updated.
+ */
+[[nodiscard]] bool complete_profile_setup() noexcept;
 
 /**
  * Moves the selection to one authored character.
@@ -415,8 +511,7 @@ set_selected_title(std::uint16_t recordIndex, std::uint64_t& characterSoid, bool
  * Commits a prepared equipment mutation only while the full captured character still matches.
  *
  * @param mutation Prepared mutation, always cleared before this function returns.
- * @return True
- * when the equip or unequip commits atomically and leaves the whole account valid.
+ * @return True when the equip or unequip commits atomically and leaves the account valid.
  */
 [[nodiscard]] bool commit_equipment_swap(PendingEquipmentSwap& mutation) noexcept;
 
@@ -606,11 +701,71 @@ commit_profile_item_acquisition(PendingProfileItemAcquisition& mutation) noexcep
 /** Commits one prepared item-state change behind an exact full-character staleness guard. */
 [[nodiscard]] bool commit_item_state(PendingItemState& mutation) noexcept;
 
+/**
+ * Prepares the selected character's current activity, family-4 `+45896`, without changing State.
+ * @param activityIndex Activity the character is launching into.
+ * @param mutation Gets the checked after-image.
+ * @return True when a character is selected and the value changes.
+ */
+[[nodiscard]] bool prepare_current_activity(std::uint16_t activityIndex,
+                                            PendingCurrentActivity& mutation) noexcept;
+
+/** Commits one prepared current-activity change behind an exact character staleness guard. */
+[[nodiscard]] bool commit_current_activity(PendingCurrentActivity& mutation) noexcept;
+
+/**
+ * Merges and validates a sparse WS-701 settings update without publishing it.
+ * @param delta Supported fields decoded from one reflected settings request.
+ * @param mutation Receives a complete before/after pair only when State would change.
+ * @return Rejection, an accepted no-op, or a prepared mutation.
+ */
+[[nodiscard]] SettingsUpdateDisposition
+prepare_settings_update(const account::settings::SettingsDelta& delta,
+                        PendingSettingsUpdate& mutation) noexcept;
+
+/**
+ * Publishes one prepared settings after-image behind account-key and settings staleness guards.
+ * @param mutation Prepared update, always cleared before this function returns.
+ * @return True when the after-image was already current or was committed successfully.
+ */
+[[nodiscard]] bool commit_settings_update(PendingSettingsUpdate& mutation) noexcept;
+/** One credited side of a vendor exchange: an authored profile stack and how much to add. */
+struct ProfileExchangePayout {
+    std::uint32_t definitionHash{};
+    std::int32_t quantity{};
+};
+
+/**
+ * Prepares one vendor recycle row: charges the stack it names and credits what it pays out.
+ *
+ * This rides the profile-stack mutation rather than writing State directly, because the Client is
+ * only told about a currency gain by the account object's change ring - a row named there is what
+ * draws the floating "+5 Legendary Shards"; a direct write with a resync moves the numbers and
+ * announces nothing. Every credited row is announced under a fresh mutation serial; the charged row
+ * is not. Only an already-held payout stack is credited, since the currencies a recycle pays into
+ * are authored from the start. `preview_profile_item_acquisition` and
+ * `commit_profile_item_acquisition` carry the result the rest of the way.
+ *
+ * @param costDefinitionHash Stack the row charges against.
+ * @param costQuantity Units of it the row consumes.
+ * @param payouts Stacks to credit, each clamped to its own native stack limit.
+ * @param mutation Gets the checked profile before/after images without changing account State.
+ * @return True only when the charge and every credit fit and the whole account stayed valid.
+ */
+[[nodiscard]] bool prepare_vendor_exchange(std::uint32_t costDefinitionHash,
+                                           std::int32_t costQuantity,
+                                           std::span<const ProfileExchangePayout> payouts,
+                                           PendingProfileItemAcquisition& mutation) noexcept;
+
 /** @return A copy of the active account state, read under the lock. */
 [[nodiscard]] AccountState account_snapshot() noexcept;
 
-/** @return A copy of the evaluated content state, read under the lock. */
-[[nodiscard]] InvestmentState investment_snapshot() noexcept;
+/**
+ * Copies the evaluated content state and adds build-derived catalyst completion overrides.
+ * @param output Receives one complete Family-5 snapshot on success.
+ * @return False when the fixed override banks cannot hold the complete state.
+ */
+[[nodiscard]] bool investment_snapshot(InvestmentState& output) noexcept;
 
 /** Prepares one artifact purchase without changing persistent state. */
 [[nodiscard]] bool prepare_artifact_mod_unlock(std::uint16_t saleIndex,

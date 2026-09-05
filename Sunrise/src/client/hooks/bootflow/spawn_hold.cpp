@@ -1,4 +1,9 @@
+#include <windows.h>
+
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <string_view>
 
@@ -7,6 +12,7 @@
 #include "../../../state/activity/runtime.h"
 #include "../../hooking/detour.h"
 #include "internal.h"
+#include "spawn/probe.h"
 
 namespace sunrise::client::hooks::bootflow {
 namespace {
@@ -29,6 +35,38 @@ using SpawnGate = bool(__fastcall*)(std::int32_t) noexcept;
 
 hooking::detour::Handle g_handle{};
 std::atomic<SpawnGate> g_original{nullptr};
+std::atomic<std::uint64_t> g_lastProbeTick{};
+std::atomic<spawn::Refusal> g_lastRefusal{spawn::Refusal::unknown};
+
+/** Reports a changed refusal immediately and a persistent refusal every five seconds. */
+void report_spawn_refusal(std::int32_t datum,
+                          state::activity::WorldPhase phase,
+                          std::uint64_t age) noexcept {
+    const spawn::Reading reading = spawn::examine(datum);
+    const std::uint64_t now = GetTickCount64();
+    const spawn::Refusal previous = g_lastRefusal.exchange(reading.refusal);
+    const std::uint64_t last = g_lastProbeTick.load(std::memory_order_relaxed);
+    if (reading.refusal == previous && now - last < 5'000U) {
+        return;
+    }
+    g_lastProbeTick.store(now, std::memory_order_relaxed);
+    std::array<char, core::log::kLineCapacity> fields{};
+    const std::size_t count = spawn::describe(reading, fields);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=bootflow stage=spawn_gate result=blocked phase=%u age=%llu %.*s",
+                                      static_cast<unsigned>(phase),
+                                      static_cast<unsigned long long>(age),
+                                      static_cast<int>(count),
+                                      fields.data());
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::warn,
+                         {line.data(),
+                          (std::min)(static_cast<std::size_t>(written), line.size() - 1U)});
+    }
+}
 
 /**
  * Puts the spawn after the world-transition fade is armed.
@@ -53,6 +91,9 @@ __declspec(noinline) bool __fastcall spawn_gate(std::int32_t datum) noexcept {
     if (phase == state::activity::WorldPhase::arrived) {
         release_world_fade();
     }
+    if (!allowed && transitioning) {
+        report_spawn_refusal(datum, phase, age);
+    }
     return allowed && loading ? kHeld : allowed;
 }
 
@@ -70,6 +111,11 @@ StageResult stage_spawn_hold(hooking::detour::Spec& spec) noexcept {
                          "ev=bootflow stage=spawn_hold result=fail reason=target");
         return StageResult::unavailable;
     }
+    if (!spawn::resolve(target)) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::warn,
+                         "ev=bootflow stage=current_slice result=fail reason=targets");
+    }
     spec = hooking::detour::Spec{target, reinterpret_cast<void*>(&spawn_gate)};
     return StageResult::staged;
 }
@@ -77,6 +123,7 @@ StageResult stage_spawn_hold(hooking::detour::Spec& spec) noexcept {
 /** Takes the spawn hold's attached handle, or a detached one. */
 void publish_spawn_hold(const hooking::detour::Handle& handle) noexcept {
     if (!handle.attached) {
+        spawn::forget();
         core::log::write(core::log::Channel::client,
                          core::log::Level::warn,
                          "ev=bootflow stage=spawn_hold result=fail reason=attach");
@@ -95,6 +142,9 @@ void uninstall_spawn_hold() noexcept {
         (void)hooking::detour::uninstall(g_handle);
     }
     g_original.store(nullptr, std::memory_order_release);
+    g_lastProbeTick.store(0, std::memory_order_relaxed);
+    g_lastRefusal.store(spawn::Refusal::unknown, std::memory_order_relaxed);
+    spawn::forget();
 }
 
 } // namespace sunrise::client::hooks::bootflow

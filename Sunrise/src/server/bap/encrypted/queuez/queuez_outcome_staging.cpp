@@ -185,6 +185,27 @@ stage_profile_item_acquisition_push(Scratch& scratch,
     return true;
 }
 
+/**
+ * Says whether equipping into one slot changes what the family-two member record publishes.
+ *
+ * That record carries two fields fed by different slots. The emblem comes from the emblem slot,
+ * and the light is the mean of the eight gear slots -- the three weapons and the five armour
+ * pieces -- so an armour swap moves the record just as surely as an emblem swap does. Gating on
+ * the emblem alone would leave the roster row holding a stale light until the next subscribe.
+ *
+ * Everything else is excluded because it moves neither field: a ghost, sparrow, ship, subclass,
+ * clan banner, emote or finisher carries no Power in this season and is not the emblem, so a
+ * swap there would spend a re-push republishing an unchanged object.
+ *
+ * @param equipmentSlotIndex Authored semantic slot the equip targeted.
+ * @return True when the slot feeds the emblem or the light the member record carries.
+ */
+[[nodiscard]] constexpr bool moves_social_roster(std::size_t equipmentSlotIndex) noexcept {
+    namespace inventory = state::account::inventory;
+    return equipmentSlotIndex <= static_cast<std::size_t>(inventory::EquipmentSlot::classItem)
+           || equipmentSlotIndex == static_cast<std::size_t>(inventory::EquipmentSlot::emblem);
+}
+
 } // namespace
 
 /** Stages queuez subscription, unsubscription, or character-move output for one peer. */
@@ -210,6 +231,7 @@ bool stage_service_outcome(Scratch& scratch,
     const auto* equipment = transaction_if<EquipmentSwapTransaction>(outcome);
     const auto* subclassSelection = transaction_if<SubclassSelectionTransaction>(outcome);
     const auto* itemState = transaction_if<ItemStateTransaction>(outcome);
+    const auto* currentActivity = transaction_if<CurrentActivityTransaction>(outcome);
     const auto* artifactPurchase = transaction_if<ArtifactPurchaseTransaction>(outcome);
     const auto* socket = transaction_if<SocketPlugTransaction>(outcome);
     const auto* itemAcquisition = transaction_if<ItemAcquisitionTransaction>(outcome);
@@ -220,6 +242,12 @@ bool stage_service_outcome(Scratch& scratch,
     const auto presentationRows = preserveAcquisitionPresentation
                                       ? acquisitionPresentationRows
                                       : std::span<const AcquisitionPresentationRow>{};
+    // Set before the branch chain rather than inside the equipment arm. That arm returns early
+    // when the staged after-image fails validation, and the equip has already moved State by
+    // then -- so the published record is stale on exactly the path the arm never finishes.
+    publication.rearmsSocialRosterRepush =
+        equipment != nullptr && equipment->pending != nullptr
+        && moves_social_roster(equipment->pending->equipmentSlotIndex);
     if (outcome.hasSubscription) {
         push::append_queuez_notification(scratch,
                                          before,
@@ -239,7 +267,10 @@ bool stage_service_outcome(Scratch& scratch,
             socialRosterRoot = outcome.subscription.familyRootSoid;
         }
     } else if (outcome.hasUnsubscription) {
-        stage_unsubscription(before, outcome.unsubscription.familyRootSoid, after);
+        stage_unsubscription(before,
+                             outcome.unsubscription.familyType,
+                             outcome.unsubscription.familyRootSoid,
+                             after);
     } else if (outcome.hasChangeCharacter) {
         // The reply already carries the version this patch promises. A patch that cannot be built
         // leaves the ladder where it is, instead of holding back that reply.
@@ -397,6 +428,32 @@ bool stage_service_outcome(Scratch& scratch,
         }
         middleware::secure_channel::advance_nonce(nonce);
         after = update.after;
+    } else if (currentActivity != nullptr) {
+        // Only the selected character's own body changes. The reply is the client's task
+        // completion and this upsert rides behind it in the same write.
+        const EquipmentSwap& update = currentActivity->update;
+        bool preservedManifest = update.after.family4ResidentCount == before.family4ResidentCount;
+        for (std::size_t index = 0; preservedManifest && index < before.family4ResidentCount;
+             ++index) {
+            preservedManifest = update.after.family4Residents[index].objectSoid
+                                    == before.family4Residents[index].objectSoid
+                                && update.after.family4Residents[index].definitionId
+                                       == before.family4Residents[index].definitionId;
+        }
+        if (!valid(update.after) || !preservedManifest
+            || update.characterSoid != currentActivity->pending.characterSoid
+            || update.after.family4RootSoid != before.family4RootSoid
+            || before.family4Version == (std::numeric_limits<std::int32_t>::max)()
+            || update.after.family4Version != before.family4Version + 1
+            || !push::append_current_activity_notification(
+                scratch, update, currentActivity->pending, key, nonce, response, written)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=current_activity result=fail");
+            return false;
+        }
+        middleware::secure_channel::advance_nonce(nonce);
+        after = update.after;
     } else if (subclassSelection != nullptr) {
         // Body processing already staged the exact +1 revision opcode 801 promised. The instance
         // upsert goes first, then the appearance and roster refreshes, so gameplay reads the new
@@ -435,36 +492,10 @@ bool stage_service_outcome(Scratch& scratch,
         }
         middleware::secure_channel::advance_nonce(nonce);
         after = selection.after;
-        // The ability-bucket rebuild runs off the Client content-extraction pump, so the two
-        // refreshes below can race it and carry empty buckets. The delayed re-derivation is owed
-        // either way.
+        // Family zero and Family three no longer fit beside the enlarged upstream Family-four
+        // selection notification in this bounded reply. Publish them through the already-proven
+        // deferred refresh channel after the primary mutation commits.
         armsAbilityRefresh = true;
-        // A subclass is always equipped, so both the appearance and roster ability reads are
-        // always owed a refresh once one is active.
-        if (after.family0Active) {
-            CharacterAppearanceRefresh refresh{};
-            if (!stage_character_appearance_refresh(after, pending.characterSoid, refresh)
-                || !push::append_subclass_appearance_refresh_notification(
-                    scratch, refresh, pending, key, nonce, response, written)) {
-                core::log::write(core::log::Channel::server,
-                                 core::log::Level::warn,
-                                 "ev=queuez stage=subclass_appearance result=fail");
-                return false;
-            }
-            after = refresh.after;
-        }
-        if (after.family3Active) {
-            RosterAppearanceRefresh refresh{};
-            if (!stage_roster_appearance_refresh(after, pending.characterSoid, false, refresh)
-                || !push::append_subclass_roster_refresh_notification(
-                    scratch, refresh, pending, key, nonce, response, written)) {
-                core::log::write(core::log::Channel::server,
-                                 core::log::Level::warn,
-                                 "ev=queuez stage=subclass_roster result=fail");
-                return false;
-            }
-            after = refresh.after;
-        }
     } else if (socket != nullptr) {
         // Body processing staged this exact +1 revision before encoding opcode 903's status pair.
         // A socket selection changes only one already-resident item-instance body.
@@ -507,33 +538,10 @@ bool stage_service_outcome(Scratch& scratch,
         }
         middleware::secure_channel::advance_nonce(nonce);
         after = socketPlug.after;
-        // Equipped plugs feed Family zero's material, overflow-hash and sandbox-perk banks. An
-        // inventory-only socket change has no rendered character record to refresh.
-        if (pending.targetEquipped && after.family0Active) {
-            CharacterAppearanceRefresh refresh{};
-            if (!stage_character_appearance_refresh(after, pending.characterSoid, refresh)
-                || !push::append_socket_appearance_refresh_notification(
-                    scratch, refresh, pending, key, nonce, response, written)) {
-                core::log::write(core::log::Channel::server,
-                                 core::log::Level::warn,
-                                 "ev=queuez stage=socket_appearance result=fail");
-                return false;
-            }
-            after = refresh.after;
-        }
-        // A socket change can alter the rendered shader/perk banks in Family three, but it does not
-        // change the roster's base-definition references.  Only the character record is owed.
-        if (pending.targetEquipped && after.family3Active) {
-            RosterAppearanceRefresh refresh{};
-            if (!stage_roster_appearance_refresh(after, pending.characterSoid, false, refresh)
-                || !push::append_socket_roster_refresh_notification(
-                    scratch, refresh, pending, key, nonce, response, written)) {
-                core::log::write(core::log::Channel::server,
-                                 core::log::Level::warn,
-                                 "ev=queuez stage=socket_roster result=fail");
-                return false;
-            }
-            after = refresh.after;
+        // Equipped plugs alter Family-zero and Family-three presentation. Those enlarged records
+        // are published separately so this mutation cannot fail after its primary frame is built.
+        if (pending.targetEquipped) {
+            armsAbilityRefresh = true;
         }
     } else if (itemAcquisition != nullptr) {
         // Body processing staged this exact manifest append before encoding the response version.

@@ -23,12 +23,8 @@ Destiny 2 Offline Exploration Mod
 - Bottomless magazines, built by me
 - [ReGlitched/Sunrise](https://github.com/ReGlitched/Sunrise) (Entity Spawner)
 - [ItsReaver/Sunrise:feature/player-no-turnback-godmode](https://github.com/ltsReaver/Sunrise/tree/feature/player-no-turnback-godmode) (Godmode and Turnback avoidance)
-- [Nyxaraa/Sunrise-Nyxaraa:triumph-work-code](https://github.com/Nyxaraa/Sunrise-Nyxaraa/tree/triumph-work-code) (Triumphs + Titles + Season Pass + Artifact + Lore + Collectibles)
 - [pr/54](https://github.com/stanuwu/Sunrise/pull/54) (Weapon Editor)
 - [pr/58](https://github.com/stanuwu/Sunrise/pull/58) (Automatic Enemy Spawns)
-- [pr/80](https://github.com/stanuwu/Sunrise/pull/80) (Basic Roster)
-- [pr/85](https://github.com/stanuwu/Sunrise/pull/85) (Exotic Catalysts)
-- [pr/90](https://github.com/stanuwu/Sunrise/pull/90) (Faster Boot Times)
 - [pr/94](https://github.com/stanuwu/Sunrise/pull/94) (Fixes Bird Errors)
 
 ## WIP
@@ -88,13 +84,13 @@ $ cd Sunrise
 
 2. Download Windows headers:
 ```bash
-$ xwin --accept-license splat --include-debug-libs --sdk-version 10.0.26100 --output .xwin-cache
+$ xwin --sdk-version 10.0.26100 --accept-license splat --include-debug-libs --output .xwin-cache
 ```
 
 3. Configure and build the project
 ```bash
 $ cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=$(pwd)/linux-to-win-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
-$ cmake --build build --config Release
+$ cmake --build build
 ```
 
 ## Contributing
@@ -120,6 +116,7 @@ Pull Requests are welcome. Please follow these rules:
 
 - https://github.com/ocornut/imgui
 - https://github.com/microsoft/detours
+- https://lua.org/
 
 ### Artwork:
 

@@ -11,6 +11,7 @@
 
 #include "../../middleware/web_service/messages/opcode206.h"
 #include "../../state/runtime/runtime.h"
+#include "../../state/vendors/answered_interactions.h"
 
 namespace sunrise::server::web_service {
 
@@ -40,8 +41,17 @@ struct Outcome {
                                   std::unique_ptr<state::PendingItemState>,
                                   std::unique_ptr<state::PendingArtifactPurchase>,
                                   std::unique_ptr<state::PendingRecordRewardGrant>,
-                                  std::unique_ptr<state::PendingSeasonPassReward>>;
+                                  std::unique_ptr<state::PendingSeasonPassReward>,
+                                  std::unique_ptr<state::PendingSettingsUpdate>>;
     Mutation mutation{};
+    /**
+     * Vendor whose shown interaction this request answers once its mutation commits, or
+     * `state::vendors::kAbsentIndex`. A quest grant answers the banner that offered it, but only a
+     * committed grant does: queuez preflight or the commit's staleness guard can still drop the
+     * mutation, and an answered list that is append-only for the session would then bury a quest
+     * the player is still owed. So the answer rides the transaction to where the grant commits.
+     */
+    std::uint16_t answeredVendor{state::vendors::kAbsentIndex};
 };
 
 /** Allocates only the selected mutation outside the request's already deep stack. */
@@ -91,6 +101,56 @@ template <typename Mutation>
 inline void clear_mutation(Outcome& outcome) noexcept {
     outcome.mutation.template emplace<std::monostate>();
 }
+
+/** Records the final profile-stack creation reply and exact Family-4 account revision. */
+void report_profile_item_acquisition_response(const middleware::web_service::Message& message,
+                                              std::int32_t family4Version,
+                                              std::uint32_t definitionHash,
+                                              std::int32_t quantity,
+                                              std::span<const std::byte> response) noexcept;
+
+/** Records a dismantle reply after its exact Family-4 version and removed instance are known. */
+void report_item_dismantle_response(const middleware::web_service::Message& message,
+                                    std::int32_t family4Version,
+                                    std::uint64_t dismantledInstanceSoid,
+                                    std::span<const std::byte> response) noexcept;
+
+/** Records a socket-action reply after its exact item-instance Family-4 revision is known. */
+void report_socket_plug_response(const middleware::web_service::Message& message,
+                                 std::int32_t family4Version,
+                                 std::uint64_t targetInstanceSoid,
+                                 std::uint8_t socketLane,
+                                 std::uint16_t plugDefinitionIndex,
+                                 std::span<const std::byte> response) noexcept;
+
+/** Records an opcode-801 reply after its exact subclass item-instance revision is known. */
+void report_subclass_selection_response(const middleware::web_service::Message& message,
+                                        std::int32_t family4Version,
+                                        const state::PendingSubclassSelection& mutation,
+                                        std::span<const std::byte> response) noexcept;
+
+/**
+ * Re-encodes a prepared reply as a refusal after its Queuez staging failed.
+ * The reply was already encoded as a success, and nothing is published now, so it must say so.
+ * @param message Parsed request whose correlation fields are echoed.
+ * @param response Svc-11 response-body storage owned by the caller.
+ * @param written Gets the encoded response-body size.
+ * @return True when the refusal fits.
+ */
+[[nodiscard]] bool encode_staging_refusal(const middleware::web_service::Message& message,
+                                          std::span<std::byte> response,
+                                          std::size_t& written) noexcept;
+
+/**
+ * Answers one whole supported Web Service request body.
+ * @param request Whole decrypted svc-10 body.
+ * @param response Svc-11 response-body storage owned by the caller.
+ * @param written Gets the encoded response-body size, or zero when the header does not parse.
+ * @return False only when the envelope header does not parse.
+ */
+[[nodiscard]] bool consume(std::span<const std::byte> request,
+                           std::span<std::byte> response,
+                           std::size_t& written) noexcept;
 
 /**
  * Answers one request and reports any subscription side effect.

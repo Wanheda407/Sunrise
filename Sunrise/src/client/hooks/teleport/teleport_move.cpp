@@ -49,6 +49,9 @@ std::atomic_bool g_keyDown{false};
 std::atomic_uint32_t g_requestAge{0};
 /** Set while the feature is usable, so the per-tick path costs one atomic read when it is not. */
 std::atomic_bool g_active{false};
+SRWLOCK g_cameraPoseLock{SRWLOCK_INIT};
+CameraPose g_cameraPose{};
+bool g_cameraPoseValid{};
 
 /**
  * The player's physics component, kept from the last tick that carried it. At rest the sync stops
@@ -64,6 +67,14 @@ CameraSingleton g_cameraSingleton{};
 /** Written by the camera hook and read by the physics hook. Both run on the same thread. */
 std::array<float, kVectorLanes> g_forward{};
 std::array<float, kVectorLanes> g_cameraPosition{};
+
+/** Withdraws the pose when the camera block is not readable for this frame. */
+void invalidate_camera_pose() noexcept {
+    AcquireSRWLockExclusive(&g_cameraPoseLock);
+    g_cameraPose = {};
+    g_cameraPoseValid = false;
+    ReleaseSRWLockExclusive(&g_cameraPoseLock);
+}
 
 /**
  * Reads one value out of game memory without faulting on a torn pointer.
@@ -140,8 +151,8 @@ void report_skip(const char* reason) noexcept;
 
 /**
  * Starts the injected press that wakes the body.
- * Nothing reads the new body position until something integrates it, so the move is published by
- * driving the player's own forward action rather than by writing what it would have produced.
+ * Nothing reads the new body position until something integrates it. So the move drives the
+ * player's own forward action, instead of writing what that action would have produced.
  */
 void begin_press() noexcept {
     const state::AccountState account = state::account_snapshot();
@@ -394,24 +405,33 @@ bool current_camera_pose(std::array<float, 3>& position,
     return true;
 }
 
-/** Publishes the camera forward vector for the physics tick that follows. */
-void capture_forward(std::uint32_t playerIndex) noexcept {
+/** Publishes the frame's complete camera pose and its forward vector. */
+void capture_camera_pose(std::uint32_t playerIndex) noexcept {
     if (playerIndex == kInvalidHandle || g_cameraSingleton == nullptr) {
+        invalidate_camera_pose();
         return;
     }
     std::byte* const camera = g_cameraSingleton();
     if (camera == nullptr) {
+        invalidate_camera_pose();
         return;
     }
-    const std::byte* const block = camera + kCameraBlockStride * playerIndex;
-    std::array<float, kVectorLanes> forward{};
-    std::array<float, kVectorLanes> position{};
-    if (!read_at(block + kCameraForwardX, forward)
-        || !read_at(block + kCameraPositionX, position)) {
+    const std::size_t playerOffset = kCameraBlockStride * playerIndex;
+    CameraPose pose{};
+    if (!read_at(camera + playerOffset + kCameraPositionX, pose.position)
+        || !read_at(camera + playerOffset + kCameraForwardX, pose.forward)
+        || !read_at(camera + playerOffset + kCameraUpX, pose.up)
+        || !read_at(camera + playerOffset + kCameraHorizontalFov, pose.horizontalFov)
+        || !read_at(camera + playerOffset + kCameraAspect, pose.aspect)) {
+        invalidate_camera_pose();
         return;
     }
-    g_forward = forward;
-    g_cameraPosition = position;
+    AcquireSRWLockExclusive(&g_cameraPoseLock);
+    g_cameraPose = pose;
+    g_cameraPoseValid = true;
+    ReleaseSRWLockExclusive(&g_cameraPoseLock);
+    g_forward = pose.forward;
+    g_cameraPosition = pose.position;
     g_forwardValid.store(true, std::memory_order_release);
 }
 
@@ -501,6 +521,16 @@ bool owns_local_player(void* component) noexcept {
            && owns_player(static_cast<std::byte*>(component));
 }
 
+/** Reports whether the native controlled-object accessor has published a local player. */
+bool controlled_player_present() noexcept {
+    if (g_controlledHandle == nullptr) {
+        return false;
+    }
+    std::uint32_t controlled = kInvalidHandle;
+    g_controlledHandle(&controlled);
+    return controlled != kInvalidHandle;
+}
+
 /** Reads the world position of the body a physics component drives. */
 bool read_position(void* component, Vector& position) noexcept {
     if (component == nullptr) {
@@ -544,6 +574,15 @@ bool camera_forward(Vector& forward) noexcept {
     }
     forward = g_forward;
     return true;
+}
+
+/** Copies the last complete pose published by the camera-frame hook. */
+bool camera_pose(CameraPose& pose) noexcept {
+    AcquireSRWLockShared(&g_cameraPoseLock);
+    const bool valid = g_cameraPoseValid;
+    pose = valid ? g_cameraPose : CameraPose{};
+    ReleaseSRWLockShared(&g_cameraPoseLock);
+    return valid;
 }
 
 } // namespace sunrise::client::hooks::teleport

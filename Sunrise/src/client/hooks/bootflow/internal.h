@@ -94,20 +94,6 @@ void publish_orbit_handoff(const hooking::detour::Handle& handle) noexcept;
 void uninstall_orbit_handoff() noexcept;
 
 /**
- * Stages the join-request readiness force, which moves the activity session to status 6.
- * Two of the gate's five terms are client flags with no host input.
- * @param spec Receives the target and replacement.
- * @return staged when the call site was found, unavailable on a miss.
- */
-[[nodiscard]] StageResult stage_join_request_ready(hooking::detour::Spec& spec) noexcept;
-
-/** Takes the join-request readiness force's attached handle, or a detached one. */
-void publish_join_request_ready(const hooking::detour::Handle& handle) noexcept;
-
-/** Detaches the join-request readiness force. */
-void uninstall_join_request_ready() noexcept;
-
-/**
  * Stages the owner activity slot force. It pins the participation record to the replicated
  * snapshot at `comp + 496` instead of the local one at `comp + 1256`.
  * @param spec Receives the target and replacement.
