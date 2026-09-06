@@ -1,7 +1,5 @@
 #include <Windows.h>
 
-#include <limits>
-
 #include "../../../runtime/storage/internal.h"
 #include "../../transactions/internal.h"
 #include "../runtime.h"
@@ -27,10 +25,12 @@ bool select_grant(std::uint64_t sessionId,
         const AuthorityState& authority = state.sessions[target].bubbleAuthority;
         const std::uint16_t previous = authority.grantTokens[bubble];
         if (previous == 0 || (enteringBubble && !authority.held[bubble])) {
+            // A bubble handed back and re-entered must be granted a token the client's mirror
+            // has not already seen, so the next one follows the highest ever issued.
+            const std::uint16_t issued = authority.issuedTokens[bubble];
             grant.bubble = bubble;
-            grant.token = previous == (std::numeric_limits<std::uint16_t>::max)()
-                              ? kInitialGrantToken
-                              : static_cast<std::uint16_t>(previous + 1U);
+            grant.token = issued < kMaximumGrantToken ? static_cast<std::uint16_t>(issued + 1)
+                                                      : kMaximumGrantToken;
             owed = true;
         }
     }
@@ -48,6 +48,7 @@ void record_grant(std::uint64_t sessionId, const Grant& grant) noexcept {
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot) {
         state.sessions[target].bubbleAuthority.grantTokens[grant.bubble] = grant.token;
+        state.sessions[target].bubbleAuthority.issuedTokens[grant.bubble] = grant.token;
         state.sessions[target].bubbleAuthority.held[grant.bubble] = true;
     }
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
@@ -154,6 +155,22 @@ void record_purge(std::uint64_t sessionId, const EntitySlotMask& mask) noexcept 
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
 }
 
+/** Drops one bubble's recorded grant, so re-entering it is granted again. */
+void release_grant(std::uint64_t sessionId, std::uint8_t bubble) noexcept {
+    if (sessionId == kAbsentSessionId || bubble >= kAuthoritySlotCount) {
+        return;
+    }
+    AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
+    ActivityState& state = runtime::storage::g_state.activity;
+    const std::size_t target = activity::transactions::find_session(state, sessionId);
+    if (target != kInvalidSessionSlot) {
+        // Only the in-force token clears. `issuedTokens` stays so the next grant advances past
+        // what the client already mirrors.
+        state.sessions[target].bubbleAuthority.grantTokens[bubble] = 0;
+    }
+    ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
+}
+
 /** Drops every grant recorded for one session, so the next roster push grants again. */
 void clear_grants(std::uint64_t sessionId) noexcept {
     if (sessionId == kAbsentSessionId) {
@@ -163,7 +180,13 @@ void clear_grants(std::uint64_t sessionId) noexcept {
     ActivityState& state = runtime::storage::g_state.activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot) {
-        state.sessions[target].bubbleAuthority = {};
+        // Only the in-force tokens clear. `issuedTokens` is what stops a re-grant re-sending a
+        // token the client's mirror already holds, and a join that resets the roster container
+        // does not reset that mirror, so wiping it here would reintroduce the invisible re-grant.
+        AuthorityState& authority = state.sessions[target].bubbleAuthority;
+        authority.grantTokens = {};
+        authority.held = {};
+        authority.releasedEntities = {};
     }
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
 }

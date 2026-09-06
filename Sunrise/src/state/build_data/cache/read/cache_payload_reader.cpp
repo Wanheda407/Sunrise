@@ -80,6 +80,9 @@ void clear(records::MutableDomains output) noexcept {
     std::fill(output.socketPlugMembers.begin(),
               output.socketPlugMembers.end(),
               items::socket_plugs::Member{});
+    std::fill(output.exoticCatalysts.begin(),
+              output.exoticCatalysts.end(),
+              items::catalysts::Definition{});
     std::fill(output.inventoryBuckets.begin(),
               output.inventoryBuckets.end(),
               inventory::buckets::Descriptor{});
@@ -91,6 +94,9 @@ void clear(records::MutableDomains output) noexcept {
               socket_entry_lists::EntryTable{});
     std::fill(output.abilityBuckets.begin(), output.abilityBuckets.end(), abilities::Definition{});
     std::fill(output.progressions.begin(), output.progressions.end(), progressions::Definition{});
+    std::fill(output.records.begin(), output.records.end(), build_data::records::Definition{});
+    std::fill(output.nodes.begin(), output.nodes.end(), nodes::Definition{});
+    std::fill(output.sobjects.begin(), output.sobjects.end(), sobjects::Definition{});
     std::fill(output.scenarios.begin(), output.scenarios.end(), scenarios::Definition{});
     std::fill(output.rosterGroups.begin(), output.rosterGroups.end(), scenarios::RosterGroup{});
     std::fill(output.spawnStems.begin(), output.spawnStems.end(), spawn_sets::Stem{});
@@ -118,11 +124,15 @@ bool expected_size(const records::DomainCounts& counts, std::uint64_t& size) noe
            && add_records(counts.socketPlugRules, sizeof(records::SocketPlugRuleRecord), size)
            && add_records(counts.socketPlugPools, sizeof(records::SocketPlugPoolRecord), size)
            && add_records(counts.socketPlugMembers, sizeof(records::SocketPlugMemberRecord), size)
+           && add_records(counts.exoticCatalysts, sizeof(records::ExoticCatalystRecord), size)
            && add_records(counts.inventoryBuckets, sizeof(records::InventoryBucketRecord), size)
            && add_records(counts.socketEntryLists, sizeof(records::SocketEntryListRecord), size)
            && add_records(counts.socketEntryTables, sizeof(records::SocketEntryTableRecord), size)
            && add_records(counts.abilityBuckets, sizeof(records::AbilityBucketRecord), size)
            && add_records(counts.progressions, sizeof(records::ProgressionRecord), size)
+           && add_records(counts.records, sizeof(records::RecordDefinitionRecord), size)
+           && add_records(counts.nodes, sizeof(records::NodeDefinitionRecord), size)
+           && add_records(counts.sobjects, sizeof(records::SObjectDefinitionRecord), size)
            && add_records(counts.scenarios, sizeof(records::ScenarioRecord), size)
            && add_records(counts.rosterGroups, sizeof(records::RosterGroupRecord), size)
            && add_records(counts.spawnStems, sizeof(records::SpawnStemRecord), size)
@@ -140,6 +150,7 @@ bool expected_size(const records::DomainCounts& counts, std::uint64_t& size) noe
 
 /** Reads every payload array and checks the decoded domains as one transaction. */
 bool read_payload(HANDLE file,
+                  const BuildIdentity& build,
                   const records::InvestmentConstants& constants,
                   const gameplay::entity_position_profiles::Fingerprint& fingerprint,
                   const records::DomainCounts& counts,
@@ -171,6 +182,9 @@ bool read_payload(HANDLE file,
             && read_domain<records::SocketPlugMemberRecord>(
                 file, output.socketPlugMembers.first(counts.socketPlugMembers), checksum);
     valid = valid
+            && read_domain<records::ExoticCatalystRecord>(
+                file, output.exoticCatalysts.first(counts.exoticCatalysts), checksum);
+    valid = valid
             && read_domain<records::InventoryBucketRecord>(
                 file, output.inventoryBuckets.first(counts.inventoryBuckets), checksum);
     valid = valid
@@ -185,6 +199,15 @@ bool read_payload(HANDLE file,
     valid = valid
             && read_domain<records::ProgressionRecord>(
                 file, output.progressions.first(counts.progressions), checksum);
+    valid = valid
+            && read_domain<records::RecordDefinitionRecord>(
+                file, output.records.first(counts.records), checksum);
+    valid = valid
+            && read_domain<records::NodeDefinitionRecord>(
+                file, output.nodes.first(counts.nodes), checksum);
+    valid = valid
+            && read_domain<records::SObjectDefinitionRecord>(
+                file, output.sobjects.first(counts.sobjects), checksum);
     valid = valid
             && read_domain<records::ScenarioRecord>(
                 file, output.scenarios.first(counts.scenarios), checksum);
@@ -224,35 +247,41 @@ bool read_payload(HANDLE file,
     if (!valid) {
         return false;
     }
-    return records::valid_domains({
-        constants,
-        output.named.first(counts.named),
-        output.items.first(counts.items),
-        output.collectibles.first(counts.collectibles),
-        output.materialRequirementSets.first(counts.materialRequirementSets),
-        output.itemDetails.first(counts.itemDetails),
-        output.socketPlugRules.first(counts.socketPlugRules),
-        output.socketPlugPools.first(counts.socketPlugPools),
-        output.socketPlugMembers.first(counts.socketPlugMembers),
-        output.inventoryBuckets.first(counts.inventoryBuckets),
-        output.socketEntryLists.first(counts.socketEntryLists),
-        output.socketEntryTables.first(counts.socketEntryTables),
-        output.abilityBuckets.first(counts.abilityBuckets),
-        output.progressions.first(counts.progressions),
-        output.scenarios.first(counts.scenarios),
-        output.rosterGroups.first(counts.rosterGroups),
-        output.spawnStems.first(counts.spawnStems),
-        output.spawnNameHashes.first(counts.spawnNameHashes),
-        output.spawnPoints.first(counts.spawnPoints),
-        output.hashNames.first(counts.hashNames),
-        output.vendorIndex.first(counts.vendorIndex),
-        output.vendorDefinitions.first(counts.vendorDefinitions),
-        output.vendorSaleRows.first(counts.vendorSaleRows),
-        output.vendorInstalledRows.first(counts.vendorInstalledRows),
-        output.positionProfiles.first(counts.positionProfiles),
-        fingerprint,
-        output.objectTypes.first(counts.objectTypes),
-    });
+    return records::valid_domains(
+        build,
+        {
+            constants,
+            output.named.first(counts.named),
+            output.items.first(counts.items),
+            output.collectibles.first(counts.collectibles),
+            output.materialRequirementSets.first(counts.materialRequirementSets),
+            output.itemDetails.first(counts.itemDetails),
+            output.socketPlugRules.first(counts.socketPlugRules),
+            output.socketPlugPools.first(counts.socketPlugPools),
+            output.socketPlugMembers.first(counts.socketPlugMembers),
+            output.exoticCatalysts.first(counts.exoticCatalysts),
+            output.inventoryBuckets.first(counts.inventoryBuckets),
+            output.socketEntryLists.first(counts.socketEntryLists),
+            output.socketEntryTables.first(counts.socketEntryTables),
+            output.abilityBuckets.first(counts.abilityBuckets),
+            output.progressions.first(counts.progressions),
+            output.records.first(counts.records),
+            output.nodes.first(counts.nodes),
+            output.sobjects.first(counts.sobjects),
+            output.scenarios.first(counts.scenarios),
+            output.rosterGroups.first(counts.rosterGroups),
+            output.spawnStems.first(counts.spawnStems),
+            output.spawnNameHashes.first(counts.spawnNameHashes),
+            output.spawnPoints.first(counts.spawnPoints),
+            output.hashNames.first(counts.hashNames),
+            output.vendorIndex.first(counts.vendorIndex),
+            output.vendorDefinitions.first(counts.vendorDefinitions),
+            output.vendorSaleRows.first(counts.vendorSaleRows),
+            output.vendorInstalledRows.first(counts.vendorInstalledRows),
+            output.positionProfiles.first(counts.positionProfiles),
+            fingerprint,
+            output.objectTypes.first(counts.objectTypes),
+        });
 }
 
 } // namespace sunrise::state::build_data::cache::read
