@@ -97,6 +97,7 @@ void discard_staged_replication_epoch(Session& session) noexcept {
 void commit_staged_replication_epoch(Session& session) noexcept {
     ReplicationEpochPublication& request = session.activityReplicationEpoch;
     if (request.staged && request.bindingGeneration == session.activity.bindingGeneration) {
+        session.activity.replicationEpoch = request.generation;
         request.pending = false;
     }
     request.staged = false;
@@ -150,7 +151,9 @@ void commit_staged_replication_epoch(Session& session) noexcept {
                                  std::size_t framedSize,
                                  const std::array<std::byte, state::kBapNonceSize>& nextSendNonce,
                                  bool published) noexcept {
-    if (!published || framedSize == 0 || framedSize > response.size()) {
+    server::gameplay::entity_identities::PublicationLease entityLease;
+    if (!published || framedSize == 0 || framedSize > response.size()
+        || !begin_staged_roster_publication(session, entityLease)) {
         // Nothing left, so a roster staged into the discarded body is offered again next push.
         discard_staged_roster(session);
         discard_staged_advertisement(session);
@@ -164,6 +167,7 @@ void commit_staged_replication_epoch(Session& session) noexcept {
         response[index] = scratch.framed[index];
     }
     written = framedSize;
+    entityLease.release();
     session.sendNonce = nextSendNonce;
     // Settled only here: the grant and the state byte may move only on a delivered frame.
     commit_staged_roster(session);

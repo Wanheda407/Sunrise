@@ -6,11 +6,13 @@
 #include "endpoint/gameplay_endpoint.h"
 #include "group/group_host.h"
 #include "peer/peer_transport.h"
+#include "squad_entity_retirement.h"
 
 namespace sunrise::server::gameplay {
 
 /** Binds the gameplay endpoint for the configured topology. */
 bool initialize() noexcept {
+    squad_entity_retirement::reset();
     association::reset();
     dtls::reset();
     peer::reset();
@@ -20,6 +22,7 @@ bool initialize() noexcept {
         return true;
     }
     actor_command_policy::shutdown();
+    squad_entity_retirement::reset();
     return false;
 }
 
@@ -36,6 +39,7 @@ void service(std::uint64_t now) noexcept {
 void shutdown() noexcept {
     endpoint::shutdown();
     actor_command_policy::shutdown();
+    squad_entity_retirement::reset();
     peer::reset();
     group::reset();
     dtls::reset();

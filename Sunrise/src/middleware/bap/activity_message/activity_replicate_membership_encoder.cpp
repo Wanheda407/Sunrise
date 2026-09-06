@@ -28,7 +28,8 @@ bool encode_replicate_membership(const MembershipSnapshot& snapshot,
                          && writer.write(1, 1) && write_region_block(writer, snapshot)
                          && writer.write(1, 1) && writer.write(occupied_member_mask(snapshot), 32)
                          && writer.write(1, 1) && writer.write(occupied_member_mask(snapshot), 32)
-                         && writer.write(0, 1) && writer.write(0, 1) && writer.write(0, 1);
+                         && writer.write(1, 1) && writer.write(active_view_mask(snapshot), 32)
+                         && writer.write(0, 1) && writer.write(0, 1);
     std::size_t encodedSize = 0;
     const std::size_t meaningfulBits = meaningful_bit_count(snapshot);
     if (!encoded || writer.bit_count() != meaningfulBits || !writer.finish(encodedSize)

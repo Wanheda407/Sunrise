@@ -50,6 +50,7 @@ namespace {
            && left.authBitCount == right.authBitCount
            && left.effectiveRegion == right.effectiveRegion && left.slotIndex == right.slotIndex
            && left.deviceValue == right.deviceValue && left.squadMode == right.squadMode
+           && left.squadRetireOnReturn == right.squadRetireOnReturn
            && left.squadCount == right.squadCount && left.deviceChannel == right.deviceChannel
            && left.slotType == right.slotType && left.authByteCount == right.authByteCount
            && left.lifetimeState == right.lifetimeState && left.deviceSnap == right.deviceSnap

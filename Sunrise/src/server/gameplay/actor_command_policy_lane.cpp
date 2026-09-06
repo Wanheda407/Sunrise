@@ -231,27 +231,22 @@ struct SquadClientRefLayout final {
 
 } // namespace
 
-/**
- * Applies one retry-safe actor projection.
- * @param groupSessionId Group session the channel-2 batch arrived on.
- * @param batch One committed entity record, or an empty batch.
- * @return True when the registry holds the record, so the peer may commit its wrapper.
- */
-bool accept_entity_batch(std::uint64_t groupSessionId,
-                         const external::EntityBatch& batch) noexcept {
-    if (groupSessionId == 0 || !batch.recordPresent) {
-        return groupSessionId != 0;
+/** Optional policy projection retains only its supported entity metadata. */
+static bool accept_entity_record(std::uint64_t groupSessionId,
+                                 const external::EntityRecord& record) noexcept {
+    if (groupSessionId == 0) {
+        return false;
     }
     if (InterlockedIncrement(&g_entityRecordDiagnostics) <= 128) {
         report(core::log::Level::debug,
                "ev=actor_policy stage=entity_record type=%u flags=0x%X slot=%u incarnation=%u "
                "baseline=%u update=%u",
-               static_cast<unsigned>(batch.record.type),
-               static_cast<unsigned>(batch.record.flags),
-               static_cast<unsigned>(batch.record.token.slot),
-               static_cast<unsigned>(batch.record.token.incarnation),
-               static_cast<unsigned>(batch.record.baseline.byteCount),
-               static_cast<unsigned>(batch.record.update.byteCount));
+               static_cast<unsigned>(record.type),
+               static_cast<unsigned>(record.flags),
+               static_cast<unsigned>(record.token.slot),
+               static_cast<unsigned>(record.token.incarnation),
+               static_cast<unsigned>(record.baseline.byteCount),
+               static_cast<unsigned>(record.update.byteCount));
     }
     external::ActorEntityCatalog published{};
     if (!external::published_actor_entity_catalog(published)) {
@@ -272,17 +267,17 @@ bool accept_entity_batch(std::uint64_t groupSessionId,
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
-    if (batch.record.type == external::EntityType::squad) {
-        const bool accepted = accept_squad_record(*session, batch.record);
+    if (record.type == external::EntityType::squad) {
+        const bool accepted = accept_squad_record(*session, record);
         ReleaseSRWLockExclusive(&g_lock);
         return accepted;
     }
-    if (batch.record.type != external::EntityType::sobject) {
+    if (record.type != external::EntityType::sobject) {
         ReleaseSRWLockExclusive(&g_lock);
         return true;
     }
     external::ActorEntityCatalog catalog{session->catalog, session->catalog->actor_classes()};
-    if (batch.record.token.slot >= session->actors.slots.size()) {
+    if (record.token.slot >= session->actors.slots.size()) {
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
@@ -299,20 +294,20 @@ bool accept_entity_batch(std::uint64_t groupSessionId,
     const state::activity_sdk::Snapshot priorCatalog = session->actors.catalog;
     const format::ActorClass* const priorClassData = session->actors.classData;
     const std::size_t priorClassCount = session->actors.classCount;
-    const external::ActorEntitySlot priorSlot = session->actors.slots[batch.record.token.slot];
+    const external::ActorEntitySlot priorSlot = session->actors.slots[record.token.slot];
     const external::ActorEntityApplyResult result =
-        external::apply_actor_entity_record(session->actors, catalog, batch.record);
+        external::apply_actor_entity_record(session->actors, catalog, record);
     bool policyCommandQueued = false;
     bool accepted = result != external::ActorEntityApplyResult::invalid
                     && result != external::ActorEntityApplyResult::staleToken;
     if (result == external::ActorEntityApplyResult::actorRemoved) {
-        remove_target_state(*session, batch.record.token);
+        remove_target_state(*session, record.token);
     } else if (result == external::ActorEntityApplyResult::actorCreated && session->policyActive) {
         std::uint32_t actorClassIndex = format::kAbsentIndex;
-        if (selected_entity_class(*session, batch.record.token, actorClassIndex)) {
+        if (selected_entity_class(*session, record.token, actorClassIndex)) {
             policyCommandQueued = queue_command(*session,
                                                 actorClassIndex,
-                                                batch.record.token,
+                                                record.token,
                                                 session->policyValue,
                                                 OutputPurpose::policyCommand);
             accepted = policyCommandQueued;
@@ -323,16 +318,27 @@ bool accept_entity_batch(std::uint64_t groupSessionId,
         session->actors.catalog = priorCatalog;
         session->actors.classData = priorClassData;
         session->actors.classCount = priorClassCount;
-        session->actors.slots[batch.record.token.slot] = priorSlot;
+        session->actors.slots[record.token.slot] = priorSlot;
     }
     ReleaseSRWLockExclusive(&g_lock);
     if (policyCommandQueued) {
         report(core::log::Level::info,
                "ev=actor_policy stage=command result=queued group=0x%016llX slot=%u incarnation=%u",
                static_cast<unsigned long long>(groupSessionId),
-               static_cast<unsigned>(batch.record.token.slot),
-               static_cast<unsigned>(batch.record.token.incarnation));
+               static_cast<unsigned>(record.token.slot),
+               static_cast<unsigned>(record.token.incarnation));
     }
+    return accepted;
+}
+
+/** Policy projection visits every record after transport acceptance. */
+bool accept_entity_batch(std::uint64_t groupSessionId,
+                         const external::EntityBatch& batch) noexcept {
+    if (groupSessionId == 0) return false;
+    bool accepted = true;
+    for (std::size_t index = 0; index < external::entity_record_count(batch); ++index)
+        accepted = accept_entity_record(groupSessionId, external::entity_record_at(batch, index))
+                   && accepted;
     return accepted;
 }
 

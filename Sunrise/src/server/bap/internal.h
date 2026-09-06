@@ -15,6 +15,7 @@
 #include "../../state/activity/definition.h"
 #include "../../state/activity_sdk/runtime.h"
 #include "../../state/build_data/scenarios/definition.h"
+#include "../../state/gameplay/external/squad_entity_retirement.h"
 #include "../../state/runtime/state.h"
 #include "../activity/host_runtime.h"
 #include "activity_authority_query_owner.h"
@@ -52,6 +53,9 @@ struct Scratch {
     std::array<middleware::bap::activity_message::sensor_auth_update::AuthOverride,
                middleware::bap::activity_message::sensor_auth_update::kAuthOverrideCapacity>
         rosterAuthOverrides{};
+    std::array<middleware::bap::activity_message::sensor_auth_update::SenseOverride,
+               middleware::bap::activity_message::sensor_auth_update::kAuthOverrideCapacity>
+        rosterSenseOverrides{};
     /** SDK-authored scene inputs staged before their exact msg-5 targets are installed. */
     std::array<state::activity_sdk::AuthoredSceneSeed,
                middleware::bap::activity_message::sensor_auth_update::kAuthOverrideCapacity>
@@ -107,6 +111,10 @@ inline constexpr std::size_t kRosterGroupLeaseCapacity =
  */
 struct RosterPublication {
     state::activity::bubble_authority::Grant grant{};
+    state::gameplay::squad_entity_retirement::RetirementPlan entityRetirement{};
+    /** Epochs remain staged until both retirement and roster frames reach the caller. */
+    std::uint8_t retirementPriorEpoch{}, retirementBaseEpoch{}, retirementEpoch{};
+    bool priorRosterOwedForEpoch{};
     /** Exact decode identities carried by this staged complete roster snapshot. */
     RosterDecodeMap decodeMap{};
     /** Exact typed body carried by this staged roster, if any. */

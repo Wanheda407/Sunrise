@@ -63,6 +63,7 @@ to_record(const constants::InvestmentConstants& value) noexcept {
     counts = {};
     const cache::records::MutableDomains scratch = scratch_domains(state);
     *scratch.constants = to_record(constants::snapshot());
+    gameplay::entity_object_types::Fingerprint objectFingerprint{};
     return content::snapshot(scratch.named, counts.named)
            && items::snapshot(scratch.items, counts.items)
            && collectibles::snapshot(scratch.collectibles, counts.collectibles)
@@ -92,6 +93,11 @@ to_record(const constants::InvestmentConstants& value) noexcept {
            && vendors::snapshot_sale_rows(scratch.vendorSaleRows, counts.vendorSaleRows)
            && vendors::snapshot_installed_rows(scratch.vendorInstalledRows,
                                                counts.vendorInstalledRows)
+           && gameplay::entity_position_profiles::snapshot(
+               scratch.positionProfiles, counts.positionProfiles, *scratch.positionFingerprint)
+           && gameplay::entity_object_types::snapshot(
+               scratch.objectTypes, counts.objectTypes, objectFingerprint)
+           && objectFingerprint == *scratch.positionFingerprint
            && cache::records::canonicalize(scratch, counts);
 }
 
@@ -110,7 +116,8 @@ bool all_domains_ready() noexcept {
            && material_requirement_sets_ready() && inventory_bucket_descriptors_ready()
            && socket_entry_lists_ready() && ability_buckets_ready()
            && progression_definitions_ready() && scenario_layouts_ready() && spawn_sets_ready()
-           && hash_names_ready() && constants::find(published);
+           && hash_names_ready() && gameplay::entity_position_profiles::available()
+           && gameplay::entity_object_types::available() && constants::find(published);
 }
 
 /** Gives mutable views over every fixed snapshot buffer. */
@@ -177,6 +184,9 @@ cache::records::MutableDomains scratch_domains(Context& state) noexcept {
     const auto vendorInstalledRows =
         ensure_scratch<vendors::InstalledRow, vendors::kInstalledRowCapacity>(
             state.vendorInstalledRowScratch);
+    const auto positionProfiles = ensure_scratch<gameplay::entity_position_profiles::Row,
+                                                 gameplay::entity_position_profiles::kMaximumRows>(
+        state.positionProfileScratch);
     return {
         &state.constantsScratch,
         named,
@@ -202,6 +212,10 @@ cache::records::MutableDomains scratch_domains(Context& state) noexcept {
         vendorDefinitions,
         vendorSaleRows,
         vendorInstalledRows,
+        positionProfiles,
+        &state.positionFingerprint,
+        ensure_scratch<gameplay::entity_object_types::Row,
+                       gameplay::entity_object_types::kMaximumRows>(state.objectTypeScratch),
     };
 }
 
@@ -239,6 +253,9 @@ void release_scratch_locked(Context& state) noexcept {
     release_bank(state.vendorDefinitionScratch);
     release_bank(state.vendorSaleRowScratch);
     release_bank(state.vendorInstalledRowScratch);
+    release_bank(state.positionProfileScratch);
+    release_bank(state.objectTypeScratch);
+    state.positionFingerprint = {};
     state.constantsScratch = {};
 }
 
@@ -300,6 +317,11 @@ cache::records::Domains occupied_domains(Context& state,
         std::span<const vendors::SaleRow>{state.vendorSaleRowScratch.data(), counts.vendorSaleRows},
         std::span<const vendors::InstalledRow>{state.vendorInstalledRowScratch.data(),
                                                counts.vendorInstalledRows},
+        std::span<const gameplay::entity_position_profiles::Row>{
+            state.positionProfileScratch.data(), counts.positionProfiles},
+        state.positionFingerprint,
+        std::span<const gameplay::entity_object_types::Row>{state.objectTypeScratch.data(),
+                                                            counts.objectTypes},
     };
 }
 
@@ -336,6 +358,15 @@ bool persist_if_complete_locked(Context& state) noexcept {
 } // namespace sunrise::state::build_data::runtime::persistence
 
 namespace sunrise::state::build_data {
+
+/** Newly extracted package data replaces the shared cache only after all domains are ready. */
+void invalidate_cache() noexcept {
+    auto& state = runtime::persistence::context();
+    AcquireSRWLockExclusive(&state.lock);
+    state.persisted = false;
+    state.replaceStaleCache = true;
+    ReleaseSRWLockExclusive(&state.lock);
+}
 
 /** @return True only when every domain is ready and any needed cache write works. */
 bool persist() noexcept {

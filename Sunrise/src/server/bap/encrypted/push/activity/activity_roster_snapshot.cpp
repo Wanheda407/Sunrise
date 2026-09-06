@@ -982,6 +982,7 @@ void rollback_staged_roster_state(Session& session) noexcept {
     session.activityRosterState = staged.priorState;
     session.activityRosterRegionEpoch = staged.priorRegionEpoch;
     session.activityRosterRegionBubble = staged.priorRegionBubble;
+    session.activityRosterOwedForEpoch = staged.priorRosterOwedForEpoch;
     session.activityRosterStaged = {};
 }
 
@@ -1409,6 +1410,36 @@ build_roster_snapshot(Session& session,
     if (pendingStateLocal && pendingGroupPosition >= snapshot.roster.groupCount) {
         return refuse_override("pending_group_position");
     }
+    std::size_t senseCount = 0;
+    for (const message::AuthOverride& auth : snapshot.authOverrides) {
+        if (auth.slotType != 1) {
+            continue;
+        }
+        server::activity::host::SenseObservationKey key{};
+        key.registryKey = auth.key;
+        key.objectTag = auth.objectTag;
+        key.senseSchema = 0x80807ECCU;
+        key.slotIndex = auth.slotIndex;
+        key.slotType = auth.slotType;
+        middleware::bap::activity_message::squad_sense::State recovered{};
+        if (!server::activity::host::snapshot_squad_sense(
+                session.activity.session, session.activity.bindingGeneration, key, recovered)) {
+            continue;
+        }
+        message::SenseOverride& sense = scratch.rosterSenseOverrides[senseCount];
+        sense = {};
+        if (!middleware::bap::activity_message::squad_sense::encode(
+                recovered, sense.body, sense.byteCount, sense.bitCount)) {
+            return refuse_override("squad_sense");
+        }
+        sense.key = auth.key;
+        sense.objectTag = auth.objectTag;
+        sense.slotIndex = auth.slotIndex;
+        sense.slotType = auth.slotType;
+        sense.counter = recovered.counter;
+        ++senseCount;
+    }
+    snapshot.senseOverrides = std::span(scratch.rosterSenseOverrides).first(senseCount);
     return RosterOutcome::published;
 }
 

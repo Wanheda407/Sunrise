@@ -1,5 +1,6 @@
 #include "activity_sdk_squad_runtime.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <string_view>
@@ -368,14 +369,60 @@ struct PreparedSquad final {
     return Status::ready;
 }
 
+/** Opt-in needs one exact actor class for every positively requested member. */
+state::gameplay::squad_entity_retirement::Eligibility
+retirement_eligibility(const sdk::BoundView& view,
+                       std::uint32_t squadRow,
+                       std::span<const std::int32_t> counts,
+                       const host::ScriptableTarget& target,
+                       bool enabled) noexcept {
+    state::gameplay::squad_entity_retirement::Eligibility result{};
+    result.squad = {target.registryKey, target.slotIndex, target.slotType};
+    if (!enabled || !view.catalog || target.slotType != 1) return result;
+    const auto& catalog = *view.catalog;
+    const auto squads = catalog.squads();
+    if (squadRow >= squads.size()) return result;
+    const auto members = sdk::squad_members(catalog, squads[squadRow]);
+    const auto classes = catalog.actor_classes();
+    if (members.size() != counts.size()) return result;
+    std::uint32_t selected = 0;
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        if (counts[i] <= 0) continue;
+        if ((members[i].flags & format::kSquadMemberActorClassExact) == 0
+            || members[i].actorClassIndex >= classes.size())
+            return result;
+        const auto rsat = classes[members[i].actorClassIndex].rsatTag;
+        if (rsat == 0 || (selected != 0 && selected != rsat)) return result;
+        selected = rsat;
+    }
+    if (selected == 0 || std::count_if(classes.begin(), classes.end(), [&](const auto& actor) {
+                             return actor.rsatTag == selected;
+                         }) != 1)
+        return result;
+    const auto occurrences = catalog.occurrences();
+    const auto bubbles = catalog.bubbles();
+    if (squads[squadRow].occurrenceIndex >= occurrences.size()) return result;
+    const auto& occurrence = occurrences[squads[squadRow].occurrenceIndex];
+    if (occurrence.bubbleIndex >= bubbles.size()
+        || bubbles[occurrence.bubbleIndex].bubbleOrdinal >= 64)
+        return result;
+    result.rsatTag = selected;
+    result.bubble = static_cast<std::uint8_t>(bubbles[occurrence.bubbleIndex].bubbleOrdinal);
+    result.enabled = result.bubble < 64;
+    return result;
+}
+
 } // namespace
 
+/** Availability checks never register reuse before Auth delivery. */
 Status availability(const sdk::BoundView& view,
                     std::uint32_t squadRow,
                     std::span<const std::int32_t> requestedCounts,
                     squad_auth::Mode mode,
-                    std::optional<std::uint32_t> nameHash) noexcept {
+                    std::optional<std::uint32_t> nameHash,
+                    bool retireOnReturn) noexcept {
     (void)nameHash;
+    (void)retireOnReturn;
     PreparedSquad prepared{};
     return prepare(view, squadRow, requestedCounts, mode, prepared);
 }
@@ -385,7 +432,8 @@ Status place(const sdk::BoundView& view,
              std::uint32_t squadRow,
              std::span<const std::int32_t> requestedCounts,
              squad_auth::Mode mode,
-             std::optional<std::uint32_t> nameHash) noexcept {
+             std::optional<std::uint32_t> nameHash,
+             bool retireOnReturn) noexcept {
     PreparedSquad prepared{};
     const Status status = prepare(view, squadRow, requestedCounts, mode, prepared);
     if (status != Status::ready) {
@@ -401,7 +449,9 @@ Status place(const sdk::BoundView& view,
             prepared.effectiveRegion,
             prepared.activityClientGeneration,
             nullptr,
-            prepared.authoredProfile)) {
+            prepared.authoredProfile,
+            retirement_eligibility(
+                view, squadRow, requestedCounts, prepared.target, retireOnReturn))) {
         return Status::queued;
     }
     return Status::refused;
@@ -413,7 +463,8 @@ Status place_reserved(const sdk::BoundView& view,
                       std::span<const std::int32_t> requestedCounts,
                       squad_auth::Mode mode,
                       const host::ScriptableOutputReservation& reservation,
-                      std::optional<std::uint32_t> nameHash) noexcept {
+                      std::optional<std::uint32_t> nameHash,
+                      bool retireOnReturn) noexcept {
     PreparedSquad prepared{};
     const Status status = prepare(view, squadRow, requestedCounts, mode, prepared);
     if (status != Status::ready) {
@@ -429,7 +480,9 @@ Status place_reserved(const sdk::BoundView& view,
             prepared.effectiveRegion,
             prepared.activityClientGeneration,
             &reservation,
-            prepared.authoredProfile)) {
+            prepared.authoredProfile,
+            retirement_eligibility(
+                view, squadRow, requestedCounts, prepared.target, retireOnReturn))) {
         return Status::queued;
     }
     return Status::refused;

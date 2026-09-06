@@ -93,7 +93,8 @@ namespace sunrise::server::activity::mission::lua_vm::detail {
         || definition.memberCount > kSquadMemberCapacity) {
         return luaL_error(state, "activity squad is stale or invalid");
     }
-    static constexpr std::array<std::string_view, 2> kDeclared{"counts", "mode"};
+    static constexpr std::array<std::string_view, 3> kDeclared{
+        "counts", "mode", "retire_on_return"};
     refuse_unknown_arguments(state, kDeclared);
     CallFrame& frame = active_frame(state);
     Intent intent{};
@@ -116,6 +117,7 @@ namespace sunrise::server::activity::mission::lua_vm::detail {
     SquadModeHandle mode{};
     static_cast<void>(optional_argument(state, "mode", kSquadModeMetatable, mode));
     intent.squadMode = mode.mode;
+    intent.squadRetireOnReturn = optional_boolean_argument(state, "retire_on_return", false);
     return queue_intent(state, frame, intent);
 }
 

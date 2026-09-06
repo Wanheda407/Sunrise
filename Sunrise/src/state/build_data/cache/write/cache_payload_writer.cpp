@@ -62,7 +62,9 @@ template <typename Record, typename Value>
 
 /** Computes one checksum across every array in its fixed file order. */
 bool payload_checksum(records::Domains domains, std::uint64_t& checksum) noexcept {
-    checksum = records::checksum_value(records::kChecksumOffsetBasis, domains.constants);
+    checksum = records::checksum_value(
+        records::checksum_value(records::kChecksumOffsetBasis, domains.constants),
+        domains.positionFingerprint);
     return checksum_domain<records::NamedRecord>(domains.named, checksum)
            && checksum_domain<records::ItemRecord>(domains.items, checksum)
            && checksum_domain<records::CollectibleRecord>(domains.collectibles, checksum)
@@ -87,7 +89,9 @@ bool payload_checksum(records::Domains domains, std::uint64_t& checksum) noexcep
            && checksum_domain<records::VendorDefinitionRecord>(domains.vendorDefinitions, checksum)
            && checksum_domain<records::VendorSaleRowRecord>(domains.vendorSaleRows, checksum)
            && checksum_domain<records::VendorInstalledRowRecord>(domains.vendorInstalledRows,
-                                                                 checksum);
+                                                                 checksum)
+           && checksum_domain<records::PositionProfileRecord>(domains.positionProfiles, checksum)
+           && checksum_domain<records::ObjectTypeRecord>(domains.objectTypes, checksum);
 }
 
 /** Writes every array in the same order used by the payload checksum. */
@@ -115,7 +119,9 @@ bool write_payload(HANDLE file, records::Domains domains) noexcept {
            && write_domain<records::VendorIndexRecord>(file, domains.vendorIndex)
            && write_domain<records::VendorDefinitionRecord>(file, domains.vendorDefinitions)
            && write_domain<records::VendorSaleRowRecord>(file, domains.vendorSaleRows)
-           && write_domain<records::VendorInstalledRowRecord>(file, domains.vendorInstalledRows);
+           && write_domain<records::VendorInstalledRowRecord>(file, domains.vendorInstalledRows)
+           && write_domain<records::PositionProfileRecord>(file, domains.positionProfiles)
+           && write_domain<records::ObjectTypeRecord>(file, domains.objectTypes);
 }
 
 } // namespace sunrise::state::build_data::cache::writer

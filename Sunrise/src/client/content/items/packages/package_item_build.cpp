@@ -18,6 +18,7 @@
 #include "../../../../state/runtime/runtime.h"
 #include "../../../memory/current_process_memory.h"
 #include "../../../targets/game.h"
+#include "../../activity/entity_position_profile_build.h"
 #include "../../hash_names/hash_name_build.h"
 #include "../../scenarios/scenario_build.h"
 #include "../../spawn_sets/spawn_set_build.h"
@@ -29,7 +30,8 @@ namespace {
 
 /** @return True when every domain owned by the package pass is published. */
 [[nodiscard]] bool package_domains_ready() noexcept {
-    return state::build_data::item_definitions_ready()
+    return content::activity::entity_position_profiles::ready()
+           && state::build_data::item_definitions_ready()
            && state::build_data::collectible_definitions_ready()
            && state::build_data::material_requirement_sets_ready()
            && state::build_data::configured_item_details_ready()
@@ -84,13 +86,14 @@ bool build() noexcept {
     // storage. Both are independent of the item table, so a failure here leaves it alone.
     {
         const reader::Source packageSource{directory.chars.data(), &keys};
+        (void)content::activity::entity_position_profiles::build(packageSource, storage.scratch);
         (void)content::scenarios::build(packageSource, storage.scratch);
         (void)content::spawn_sets::build(packageSource, storage.scratch);
         (void)content::hash_names::build(packageSource, storage.scratch);
     }
     if (root_domains_ready()) {
         SecureZeroMemory(&keys, sizeof keys);
-        return true;
+        return package_domains_ready();
     }
     reason = "tag";
     std::array<std::uint32_t, kContainerCandidates> candidates{};

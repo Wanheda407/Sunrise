@@ -4,6 +4,7 @@
 #include "../../../middleware/content/packages/reader/reader.h"
 #include "../../../state/build_data/runtime.h"
 #include "../../../state/runtime/runtime.h"
+#include "../activity/entity_position_profile_build.h"
 #include "../items/packages/build.h"
 #include "internal.h"
 #include "runtime.h"
@@ -20,7 +21,8 @@ SRWLOCK g_refreshLock{SRWLOCK_INIT};
  * extracted once the others finish, and the cache can then never be written.
  */
 [[nodiscard]] bool ready() noexcept {
-    return state::build_data::named_catalog_ready() && state::build_data::item_definitions_ready()
+    return activity::entity_position_profiles::ready() && state::build_data::named_catalog_ready()
+           && state::build_data::item_definitions_ready()
            && state::build_data::collectible_definitions_ready()
            && state::build_data::material_requirement_sets_ready()
            && state::build_data::configured_item_details_ready()

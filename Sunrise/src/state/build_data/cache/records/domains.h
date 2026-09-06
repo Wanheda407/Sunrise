@@ -4,6 +4,8 @@
 #include <span>
 
 #include "../../../content/content_catalog.h"
+#include "../../../gameplay/external/entity_object_types.h"
+#include "../../../gameplay/external/entity_position_profiles.h"
 #include "../../abilities/definition.h"
 #include "../../collectibles/collectible_catalog.h"
 #include "../../hash_names/definition.h"
@@ -46,6 +48,8 @@ struct DomainCounts {
     std::size_t vendorDefinitions{};
     std::size_t vendorSaleRows{};
     std::size_t vendorInstalledRows{};
+    std::size_t positionProfiles{};
+    std::size_t objectTypes{};
 };
 
 /** Fixed caller storage used while decoding the cache domains. */
@@ -75,6 +79,9 @@ struct MutableDomains {
     std::span<vendors::Definition> vendorDefinitions;
     std::span<vendors::SaleRow> vendorSaleRows;
     std::span<vendors::InstalledRow> vendorInstalledRows;
+    std::span<gameplay::entity_position_profiles::Row> positionProfiles;
+    gameplay::entity_position_profiles::Fingerprint* positionFingerprint{};
+    std::span<gameplay::entity_object_types::Row> objectTypes;
 };
 
 /** Read-only complete views used for the checks and for cache encoding. */
@@ -103,6 +110,9 @@ struct Domains {
     std::span<const vendors::Definition> vendorDefinitions;
     std::span<const vendors::SaleRow> vendorSaleRows;
     std::span<const vendors::InstalledRow> vendorInstalledRows;
+    std::span<const gameplay::entity_position_profiles::Row> positionProfiles;
+    gameplay::entity_position_profiles::Fingerprint positionFingerprint{};
+    std::span<const gameplay::entity_object_types::Row> objectTypes;
 };
 
 } // namespace sunrise::state::build_data::cache::records

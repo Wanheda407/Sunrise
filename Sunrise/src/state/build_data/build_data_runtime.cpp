@@ -6,6 +6,7 @@
 
 #include "../../core/filesystem/path.h"
 #include "../content/content_catalog.h"
+#include "../gameplay/external/entity_position_profiles.h"
 #include "abilities/ability_bucket_catalog.h"
 #include "cache/internal.h"
 #include "collectibles/collectible_catalog.h"
@@ -41,6 +42,8 @@ bool initialize(void* module, std::uint64_t configuredEquipmentHash) noexcept {
     AcquireSRWLockExclusive(&persistenceState.lock);
     runtime::persistence::clear_locked(persistenceState);
     runtime::clear_catalogs();
+    gameplay::entity_position_profiles::reset();
+    gameplay::entity_object_types::reset();
     if (module == nullptr) {
         ReleaseSRWLockExclusive(&persistenceState.lock);
         return true;
@@ -121,9 +124,15 @@ bool initialize(void* module, std::uint64_t configuredEquipmentHash) noexcept {
                                  domains.vendorDefinitions,
                                  domains.vendorSaleRows,
                                  domains.vendorInstalledRows))
-        || !hash_names::replace(domains.hashNames)) {
+        || !hash_names::replace(domains.hashNames)
+        || !gameplay::entity_position_profiles::restore(domains.positionProfiles,
+                                                        domains.positionFingerprint)
+        || !gameplay::entity_object_types::restore(domains.objectTypes,
+                                                   domains.positionFingerprint)) {
         // No domain remains published when any catalog rejects the cache transaction.
         runtime::clear_catalogs();
+        gameplay::entity_position_profiles::reset();
+        gameplay::entity_object_types::reset();
         runtime::persistence::clear_locked(persistenceState);
         ReleaseSRWLockExclusive(&persistenceState.lock);
         return false;
@@ -144,6 +153,8 @@ void shutdown() noexcept {
     runtime::persistence::Context& persistenceState = runtime::persistence::context();
     AcquireSRWLockExclusive(&persistenceState.lock);
     runtime::clear_catalogs();
+    gameplay::entity_position_profiles::reset();
+    gameplay::entity_object_types::reset();
     runtime::persistence::clear_locked(persistenceState);
     ReleaseSRWLockExclusive(&persistenceState.lock);
 }

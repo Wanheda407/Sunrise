@@ -4,14 +4,17 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../state/gameplay/external/entity_identity.h"
 #include "../../encoding/bit_reader.h"
 #include "../../encoding/bit_writer.h"
 #include "common_state.h"
 
 namespace sunrise::middleware::gameplay::external {
 
-/** The entity batch carries zero or one record. */
-inline constexpr std::size_t kEntityBatchCapacity = 1;
+/** Fixed server storage bounds one decoded entity lane to sixteen records. */
+inline constexpr std::size_t kEntityBatchCapacity = 16;
+/** The native prelude carries a one-bit auxiliary count. */
+inline constexpr std::size_t kEntityAuxiliaryCapacity = 1;
 /** A token slot is the low 13 bits of the 17-bit wire token. */
 inline constexpr std::uint16_t kMaximumEntitySlot = 0x1FFF;
 /** A token incarnation is the high four bits of the 17-bit wire token. */
@@ -57,6 +60,7 @@ struct EntityToken {
 struct TypePayload {
     std::array<std::byte, kTypePayloadStateCapacity> state{};
     std::uint16_t byteCount{};
+    state::gameplay::entity_identity::ActorSourceReference actorSource{};
 };
 
 /** One generic channel-2 record and its callback-owned type state. */
@@ -71,16 +75,44 @@ struct EntityRecord {
     EntityType type{EntityType::sobject};
     bool anchorPresent{};
     bool trailingState{};
+    /** An anchored group omits per-record tokens and follows the receiver's retained hierarchy. */
+    EntityToken streamAnchor{};
+    bool implicitToken{};
+    bool anchorGroupStart{};
 };
 
 /** One bounded channel-2 batch. */
 struct EntityBatch {
-    std::array<EntityToken, kEntityBatchCapacity> auxiliaryTokens{};
+    std::uint8_t allocationEpoch{};
+    bool hasAllocationEpoch{};
+    std::uint64_t allocationDomain{};
+    std::uint16_t ignoredRecordMask{};
+    std::array<EntityToken, kEntityAuxiliaryCapacity> auxiliaryTokens{};
     EntityRecord record{};
+    std::array<EntityRecord, kEntityBatchCapacity - 1> additionalRecords{};
     std::uint16_t currentCell{kNoEntityCell};
     std::uint8_t auxiliaryCount{};
     bool recordPresent{};
+    std::uint8_t additionalRecordCount{};
 };
+
+[[nodiscard]] inline std::size_t entity_record_count(const EntityBatch& batch) noexcept {
+    return batch.recordPresent ? 1U + batch.additionalRecordCount : 0U;
+}
+[[nodiscard]] inline const EntityRecord& entity_record_at(const EntityBatch& batch,
+                                                          std::size_t index) noexcept {
+    return index == 0 ? batch.record : batch.additionalRecords[index - 1];
+}
+[[nodiscard]] inline EntityRecord& entity_record_at(EntityBatch& batch,
+                                                    std::size_t index) noexcept {
+    return index == 0 ? batch.record : batch.additionalRecords[index - 1];
+}
+
+/** Resolves the exact existing depth-first token order of one native anchored group. */
+using ResolveAnchorGroup = bool (*)(const void* context,
+                                    const EntityToken& anchor,
+                                    std::span<EntityToken> output,
+                                    std::size_t& count) noexcept;
 
 /** Resolves the existing type needed by an update-only record. */
 using ResolveEntityType = bool (*)(const void* context,
@@ -105,6 +137,24 @@ using WriteTypePayload = bool (*)(const void* context,
                                   const TypePayload& payload,
                                   encoding::bits::Writer& writer) noexcept;
 
+/** Cell-aware callbacks select package position widths before decoding a type body. */
+using ReadCellTypePayload = bool (*)(const void* context,
+                                     const EntityToken& token,
+                                     EntityType type,
+                                     TypePayloadPart part,
+                                     const TypePayload* baseline,
+                                     std::uint16_t cell,
+                                     encoding::bits::Reader& reader,
+                                     TypePayload& output) noexcept;
+using WriteCellTypePayload = bool (*)(const void* context,
+                                      const EntityToken& token,
+                                      EntityType type,
+                                      TypePayloadPart part,
+                                      const TypePayload* baseline,
+                                      const TypePayload& payload,
+                                      std::uint16_t cell,
+                                      encoding::bits::Writer& writer) noexcept;
+
 /** Bounded type-payload callbacks. Empty callbacks are the safe scriptless fallback. */
 struct TypePayloadCodec {
     const void* context{};
@@ -113,6 +163,9 @@ struct TypePayloadCodec {
     WriteTypePayload write{};
     std::size_t maximumBaselineBits{};
     std::size_t maximumUpdateBits{};
+    ResolveAnchorGroup resolveAnchorGroup{};
+    ReadCellTypePayload readForCell{};
+    WriteCellTypePayload writeForCell{};
 };
 
 /** Common state plus the fixed empty channel-0, channel-1, and channel-3 profile. */

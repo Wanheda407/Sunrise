@@ -24,6 +24,8 @@
 #include "vendors/definition.h"
 
 namespace sunrise::state::build_data {
+/** Marks regenerated package data for the next complete shared-cache publication. */
+void invalidate_cache() noexcept;
 
 /**
  * Loads the one build-data cache next to the module, when there is one.

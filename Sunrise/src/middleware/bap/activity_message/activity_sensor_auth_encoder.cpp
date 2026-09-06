@@ -198,6 +198,40 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
             return false;
         }
     }
+    if (snapshot.senseOverrides.size() > kAuthOverrideCapacity) {
+        return false;
+    }
+    for (std::size_t index = 0; index < snapshot.senseOverrides.size(); ++index) {
+        const SenseOverride& value = snapshot.senseOverrides[index];
+        if (value.bitCount == 0 || value.byteCount != (value.bitCount + 7U) / 8U
+            || value.byteCount > value.body.size()) {
+            return false;
+        }
+        for (std::size_t earlier = 0; earlier < index; ++earlier) {
+            const SenseOverride& prior = snapshot.senseOverrides[earlier];
+            if (prior.objectTag == value.objectTag && prior.key == value.key
+                && prior.slotType == value.slotType && prior.slotIndex == value.slotIndex) {
+                return false;
+            }
+        }
+        std::size_t matches = 0;
+        for (const Group& group :
+             std::span(snapshot.roster.groups).first(snapshot.roster.groupCount)) {
+            if (group.key != value.key || group.objectTag != value.objectTag) {
+                continue;
+            }
+            for (std::size_t slot = 0; slot < group.slotTypes.size(); ++slot) {
+                if (group.slotTypes[slot] == value.slotType
+                    && group.slotIndices[slot] == value.slotIndex
+                    && (group.slotFlags[slot] & kSlotSenseFlag) != 0) {
+                    ++matches;
+                }
+            }
+        }
+        if (matches != 1) {
+            return false;
+        }
+    }
     return valid_client_sets(snapshot.roster);
 }
 

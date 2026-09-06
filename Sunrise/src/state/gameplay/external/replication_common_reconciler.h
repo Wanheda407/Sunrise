@@ -63,6 +63,17 @@ public:
     /** Commits the message-44 request after its reliable enqueue succeeds. */
     [[nodiscard]] bool commit_request() noexcept;
 
+    /** Advances only the exact epoch transition already committed by the host. */
+    [[nodiscard]] bool advance_host_epoch(std::uint8_t expected, std::uint8_t next) noexcept;
+
+    /** A current common root establishes the packet boundary for an allocation epoch. */
+    [[nodiscard]] bool qualify_entities(const middleware::gameplay::external::CommonState* common,
+                                        std::uint64_t packetOrdinal,
+                                        bool hasPacketOrdinal) noexcept;
+    [[nodiscard]] std::uint64_t allocation_domain() const noexcept {
+        return allocationDomain_;
+    }
+
     /** Copies the exact one-entry common root only after the client confirms it. */
     [[nodiscard]] bool
     outbound_common(middleware::gameplay::external::CommonState& common) const noexcept;
@@ -88,6 +99,10 @@ private:
     std::uint64_t ownerGeneration_{};
     std::uint8_t initialGeneration_{};
     std::uint8_t requestedGeneration_{};
+    std::uint8_t previousHostGeneration_{};
+    bool hasPreviousHostGeneration_{};
+    std::uint64_t allocationDomain_{}, firstEntityEpochOrdinal_{};
+    bool entityEpochConfirmed_{};
     Phase phase_{Phase::closed};
 };
 
