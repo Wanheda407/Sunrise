@@ -501,6 +501,19 @@ bool derive(const Source& source,
         definition.effectDefinitionIndex = completed->effectDefinitionIndex;
         definition.acquisitionDefinitionIndex = completed->acquisitionDefinitionIndex;
         definition.completion = completed->completion;
+        for (std::size_t flag = 0; flag < definition.completion.flagCount; ++flag) {
+            const auto mapping = std::find_if(source.accountFlagMappings.begin(),
+                                              source.accountFlagMappings.end(),
+                                              [&](const AccountFlagMapping& row) {
+                                                  return row.slot == definition.completion.flags[flag];
+                                              });
+            if (mapping != source.accountFlagMappings.end()) {
+                if (mapping->accountIndex >= state::unlocks::kAccountFlagCapacity) {
+                    return fail(output, count, report, Error::invalidCompletion);
+                }
+                definition.completionAccountFlagIndices[flag] = mapping->accountIndex;
+            }
+        }
         definition.objective = completed->objective;
         definition.socketLane = completed->socketLane;
         definition.availability =
@@ -545,6 +558,8 @@ bool matches_cached(const Source& source,
     std::array<CompletionCondition, 2 * kDefinitionCapacity> completionConditions{};
     std::array<AcquisitionGate, kDefinitionCapacity> acquisitionGates{};
     std::array<std::int32_t, state::unlocks::kObjectiveValueCapacity> objectiveValues{};
+    std::array<AccountFlagMapping, kDefinitionCapacity * kCompletionFlagCapacity> accountMappings{};
+    std::size_t mappingCount = 0;
     std::size_t completionCount = 0;
     std::size_t acquisitionCount = 0;
     std::size_t objectiveCount = 0;
@@ -571,6 +586,25 @@ bool matches_cached(const Source& source,
     for (const Definition& definition : definitions) {
         if (definition.availability == Availability::unsupported) {
             continue;
+        }
+        for (std::size_t flag = 0; flag < definition.completionAccountFlagIndices.size(); ++flag) {
+            const auto mapped = definition.completionAccountFlagIndices[flag];
+            if (mapped == kUnavailableCompletionFlagIndex) {
+                continue;
+            }
+            if (flag >= definition.completion.flagCount
+                || mapped >= state::unlocks::kAccountFlagCapacity
+                || mappingCount >= accountMappings.size()) {
+                return false;
+            }
+            const auto slot = definition.completion.flags[flag];
+            for (std::size_t i = 0; i < mappingCount; ++i) {
+                if ((accountMappings[i].slot == slot && accountMappings[i].accountIndex != mapped)
+                    || (accountMappings[i].accountIndex == mapped && accountMappings[i].slot != slot)) {
+                    return false;
+                }
+            }
+            accountMappings[mappingCount++] = {slot, mapped};
         }
         const details::Definition* detail =
             find_detail(source.details, definition.itemDefinitionIndex);
@@ -662,6 +696,7 @@ bool matches_cached(const Source& source,
                   return left.socketType < right.socketType;
               });
     Source rebuilt = source;
+    rebuilt.accountFlagMappings = std::span(accountMappings).first(mappingCount);
     rebuilt.completionConditions = std::span(completionConditions).first(completionCount);
     rebuilt.acquisitionGates = std::span(acquisitionGates).first(acquisitionCount);
     rebuilt.objectiveCompletionValues = std::span(objectiveValues).first(objectiveCount);

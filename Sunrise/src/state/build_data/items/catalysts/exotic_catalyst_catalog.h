@@ -70,7 +70,7 @@ void set_completion_enabled(bool enabled) noexcept;
                                           std::span<std::optional<std::uint16_t>> plugs) noexcept;
 
 /**
- * Adds acquired-state gates, completion flags, and completion values for released catalysts.
+ * Adds acquired-state gates, unmapped completion flags, and completion values for released catalysts.
  * Existing authored rows with the same slot are raised to the required value. The input stays
  * unchanged when either fixed override bank cannot hold the complete deduplicated result.
  * @param family Candidate Family-5 state.
@@ -85,6 +85,9 @@ void set_completion_enabled(bool enabled) noexcept;
  * @return True when completion is disabled or every objective applies atomically.
  */
 [[nodiscard]] bool append_objective_completions(std::span<std::int32_t> values) noexcept;
+
+/** Sets mapped catalyst completion bytes atomically after checking the whole account bank. */
+[[nodiscard]] bool append_account_completions(std::span<std::uint8_t> flags) noexcept;
 
 /**
  * Copies the complete catalog under its shared lock.

@@ -479,7 +479,9 @@ bool investment_snapshot(InvestmentState& output) noexcept {
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
     InvestmentState snapshot = runtime::storage::g_state.investment;
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
-    (void)progression::seasonal_experience::apply_artifact_state(snapshot.family5);
+    if (!progression::seasonal_experience::apply_artifact_state(snapshot.family5)) {
+        return false;
+    }
     if (!build_data::complete_exotic_catalyst_investment(snapshot.family5)) {
         return false;
     }
