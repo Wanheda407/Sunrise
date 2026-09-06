@@ -502,14 +502,20 @@ bool derive(const Source& source,
         definition.acquisitionDefinitionIndex = completed->acquisitionDefinitionIndex;
         definition.completion = completed->completion;
         for (std::size_t flag = 0; flag < definition.completion.flagCount; ++flag) {
-            const auto mapping = std::find_if(source.accountFlagMappings.begin(),
-                                              source.accountFlagMappings.end(),
-                                              [&](const AccountFlagMapping& row) {
-                                                  return row.slot == definition.completion.flags[flag];
-                                              });
+            const auto mapping =
+                std::find_if(source.accountFlagMappings.begin(),
+                             source.accountFlagMappings.end(),
+                             [&](const AccountFlagMapping& row) {
+                                 return row.slot == definition.completion.flags[flag];
+                             });
             if (mapping != source.accountFlagMappings.end()) {
                 if (mapping->accountIndex >= state::unlocks::kAccountFlagCapacity) {
-                    return fail(output, count, report, Error::invalidCompletion);
+                    return fail(output,
+                                count,
+                                report,
+                                Error::invalidCompletion,
+                                item->definitionHash,
+                                completed->socketLane);
                 }
                 definition.completionAccountFlagIndices[flag] = mapping->accountIndex;
             }
@@ -598,9 +604,11 @@ bool matches_cached(const Source& source,
                 return false;
             }
             const auto slot = definition.completion.flags[flag];
-            for (std::size_t i = 0; i < mappingCount; ++i) {
-                if ((accountMappings[i].slot == slot && accountMappings[i].accountIndex != mapped)
-                    || (accountMappings[i].accountIndex == mapped && accountMappings[i].slot != slot)) {
+            for (std::size_t prior = 0; prior < mappingCount; ++prior) {
+                if ((accountMappings[prior].slot == slot
+                     && accountMappings[prior].accountIndex != mapped)
+                    || (accountMappings[prior].accountIndex == mapped
+                        && accountMappings[prior].slot != slot)) {
                     return false;
                 }
             }

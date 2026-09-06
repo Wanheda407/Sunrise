@@ -7,11 +7,13 @@
 
 #include "../../../middleware/encoding/bit_reader.h"
 #include "../../../middleware/encoding/bit_writer.h"
+#include "../../../middleware/gameplay/external/composite_entity_codec.h"
 #include "../../../middleware/gameplay/external/external_entity_codec.h"
 #include "../../../middleware/gameplay/external/simulation_event_codec.h"
 #include "../../../middleware/gameplay/group/view_message.h"
 #include "../../../middleware/gameplay/peer/established_packet.h"
 #include "../../../state/gameplay/definition.h"
+#include "../../../state/gameplay/external/entity_identity.h"
 
 namespace sunrise::server::gameplay::peer {
 
@@ -50,17 +52,46 @@ void install_lane0_transport(const Lane0Transport& transport) noexcept;
 struct EntityTransport final {
     const void* context{};
     bool (*read)(const void*,
-                 std::uint64_t,
+                 const state::gameplay::entity_identity::Source&,
                  middleware::encoding::bits::Reader&,
                  middleware::gameplay::external::EntityBatch&) noexcept {};
-    bool (*accepted)(const void*,
+    bool (*prepare)(const void*,
+                    const state::gameplay::entity_identity::Source&,
+                    const middleware::gameplay::external::EntityBatch&,
+                    std::uint16_t,
+                    bool,
+                    std::uint64_t,
+                    middleware::gameplay::external::EntityBaselineMutation&) noexcept {};
+    bool (*commit)(const void*,
+                   const state::gameplay::entity_identity::Source&,
+                   const middleware::gameplay::external::EntityBaselineMutation&) noexcept {};
+    void (*reset)(const void*, const state::gameplay::entity_identity::Source&) noexcept {};
+    /** A derived observer cannot reject an already accepted external packet. */
+    void (*observed)(const void*,
+                     const state::gameplay::entity_identity::Source&,
+                     const middleware::gameplay::external::EntityBatch&,
+                     std::uint16_t,
+                     bool,
                      std::uint64_t,
-                     const middleware::gameplay::external::EntityBatch&) noexcept {};
-    void (*reset)(const void*, std::uint64_t) noexcept {};
+                     std::uint64_t) noexcept {};
+    std::size_t (*retire)(
+        const void*,
+        const state::gameplay::entity_identity::Source&,
+        std::span<const state::gameplay::entity_identity::RetiredLifetime>) noexcept {};
+    void (*advanceEpoch)(const void*,
+                         const state::gameplay::entity_identity::Source&,
+                         std::uint8_t,
+                         std::uint8_t,
+                         std::uint64_t) noexcept {};
 };
 
 /** Installs one process-lifetime, session-aware channel-2 transport. */
 void install_entity_transport(const EntityTransport& transport) noexcept;
+
+/** Retires delivered allocations under the same peer-before-codec lock order as receive. */
+[[nodiscard]] std::size_t retire_entity_baselines(
+    const state::gameplay::entity_identity::Source& source,
+    std::span<const state::gameplay::entity_identity::RetiredLifetime> lifetimes) noexcept;
 
 /** Installs the process-lifetime channel-2 codec and accepted-record sink. */
 void install_entity_codec(
@@ -199,6 +230,12 @@ open_external_common(const state::gameplay::Endpoint& endpoint,
                      const middleware::bap::activity_message::patch_epoch::PatchEpoch& patchEpoch,
                      std::uint64_t activityClientGeneration,
                      std::uint8_t replicationEpoch) noexcept;
+
+/** Synchronizes views only after an exact host-authored epoch transition commits. */
+[[nodiscard]] std::size_t commit_replication_epoch(const state::activity::SessionBinding& activity,
+                                                   std::uint64_t activityClientGeneration,
+                                                   std::uint8_t expectedEpoch,
+                                                   std::uint8_t nextEpoch) noexcept;
 
 /** Reports whether all native gates permit one outbound external body. */
 [[nodiscard]] bool external_outbound_eligible(std::uint64_t groupSessionId) noexcept;

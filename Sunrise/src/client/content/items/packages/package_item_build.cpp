@@ -11,6 +11,7 @@
 #include "../../../../state/build_data/runtime.h"
 #include "../../../../state/build_data/sobjects/sobject_catalog.h"
 #include "../../../../state/build_data/vendors/vendor_catalog.h"
+#include "../../activity/entity_position_profile_build.h"
 #include "../../hash_names/hash_name_build.h"
 #include "../../scenarios/scenario_build.h"
 #include "../../spawn_sets/spawn_set_build.h"
@@ -94,7 +95,8 @@ void build_vendor_catalog(const reader::Source& source, reader::Scratch& scratch
 /** @return True when every domain owned by the package pass is published. */
 bool ready() noexcept {
     return root_domains_ready() && state::build_data::scenario_layouts_ready()
-           && state::build_data::spawn_sets_ready() && state::build_data::hash_names_ready();
+           && state::build_data::spawn_sets_ready() && state::build_data::hash_names_ready()
+           && content::activity::entity_position_profiles::ready();
 }
 
 /** Publishes the dense item table from the installed packages, once. */
@@ -117,6 +119,7 @@ bool build() noexcept {
     // storage. Both are independent of the item table, so a failure here leaves it alone.
     {
         const reader::Source packageSource{directory.chars.data(), &keys};
+        (void)content::activity::entity_position_profiles::build(packageSource, storage.scratch);
         (void)content::scenarios::build(packageSource, storage.scratch);
         (void)content::spawn_sets::build(packageSource, storage.scratch);
         (void)content::hash_names::build(packageSource, storage.scratch);

@@ -4,7 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../middleware/bap/activity_message/entity_slots.h"
+
 namespace sunrise::state::activity::bubble_authority {
+
+using EntitySlotMask = middleware::bap::activity_message::entity_slots::EntitySlotMask;
 
 /** 64 usable bubbles and one first-send fallback own grant tokens. */
 inline constexpr std::size_t kAuthoritySlotCount = 65;
@@ -38,6 +42,10 @@ struct AuthorityState final {
      * value separately from the in-force one is what lets the next grant differ.
      */
     std::array<std::uint16_t, kAuthoritySlotCount> issuedTokens{};
+    /** True while the client holds the bubble. An abdication clears it. */
+    std::array<bool, kAuthoritySlotCount> held{};
+    /** Released entities remain pending until their exact claim is delivered. */
+    std::array<EntitySlotMask, kAuthoritySlotCount> releasedEntities{};
 };
 
 } // namespace sunrise::state::activity::bubble_authority

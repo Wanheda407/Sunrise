@@ -1,9 +1,8 @@
 /**
  * Exact parsers for client-to-host entity-authority msgs 26, 27, 29, 31, 32 and 33.
- * Fixed masks stay in wire byte order.
+ * Fixed u32 masks decode into canonical slot bytes.
  */
 
-#include <algorithm>
 #include <bit>
 
 #include "../../encoding/bit_reader.h"
@@ -39,8 +38,7 @@ namespace {
     if (release.selector > kMaximumSelector) {
         return false;
     }
-    std::copy_n(payload.begin() + kSelectorSize, entity_slots::kEncodedSize, release.mask.begin());
-    return true;
+    return entity_slots::decode_entity_slots(payload.subspan(kSelectorSize), release.mask);
 }
 
 } // namespace
@@ -57,7 +55,7 @@ bool parse_abandon(std::span<const std::byte> payload, Release& release) noexcep
         || !reader.read(kReasonWidth, stored) || !finish_padding(reader)) {
         return false;
     }
-    parsed.reason = static_cast<std::int32_t>(stored) + kReasonBias;
+    parsed.reason = static_cast<std::int32_t>(stored) - kReasonBias;
     parsed.hasReason = true;
     release = parsed;
     return true;
@@ -84,14 +82,8 @@ bool parse_request_purge(std::span<const std::byte> payload, PurgeRequest& reque
     if (!reader.read(kReasonWidth, stored)) {
         return false;
     }
-    parsed.reason = static_cast<std::int32_t>(stored) + kReasonBias;
-    for (std::byte& maskByte : parsed.mask) {
-        std::uint64_t decoded = 0;
-        if (!reader.read(entity_slots::kBitsPerMaskByte, decoded)) {
-            return false;
-        }
-        maskByte = static_cast<std::byte>(decoded);
-    }
+    parsed.reason = static_cast<std::int32_t>(stored) - kReasonBias;
+    if (!entity_slots::read_mask(reader, parsed.mask)) return false;
     if (!finish_padding(reader)) {
         return false;
     }
@@ -136,9 +128,7 @@ bool parse_query_answer(std::uint32_t messageType,
         offset += kSelectorSize;
     }
 
-    std::copy_n(payload.begin() + static_cast<std::ptrdiff_t>(offset),
-                entity_slots::kEncodedSize,
-                parsed.mask.begin());
+    if (!entity_slots::decode_entity_slots(payload.subspan(offset), parsed.mask)) return false;
     parsed.hasMask = true;
     answer = parsed;
     return true;

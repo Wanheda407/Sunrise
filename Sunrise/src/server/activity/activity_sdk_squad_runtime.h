@@ -38,14 +38,16 @@ enum class Status : std::uint8_t {
                                   std::uint32_t squadRow,
                                   std::span<const std::int32_t> requestedCounts,
                                   middleware::bap::activity_message::squad_auth::Mode mode,
-                                  std::optional<std::uint32_t> nameHash = std::nullopt) noexcept;
+                                  std::optional<std::uint32_t> nameHash = std::nullopt,
+                                  bool retireOnReturn = false) noexcept;
 
 /** Queues one exact generated SDK squad request through the existing activity msg-5 route. */
 [[nodiscard]] Status place(const state::activity_sdk::BoundView& view,
                            std::uint32_t squadRow,
                            std::span<const std::int32_t> requestedCounts,
                            middleware::bap::activity_message::squad_auth::Mode mode,
-                           std::optional<std::uint32_t> nameHash = std::nullopt) noexcept;
+                           std::optional<std::uint32_t> nameHash = std::nullopt,
+                           bool retireOnReturn = false) noexcept;
 
 /** Queues only through the exact unarmed Host revision owned by Mission State. */
 [[nodiscard]] Status place_reserved(const state::activity_sdk::BoundView& view,
@@ -53,7 +55,8 @@ enum class Status : std::uint8_t {
                                     std::span<const std::int32_t> requestedCounts,
                                     middleware::bap::activity_message::squad_auth::Mode mode,
                                     const host::ScriptableOutputReservation& reservation,
-                                    std::optional<std::uint32_t> nameHash = std::nullopt) noexcept;
+                                    std::optional<std::uint32_t> nameHash = std::nullopt,
+                                    bool retireOnReturn = false) noexcept;
 
 /** @return Stable concise text for one squad runtime result. */
 [[nodiscard]] const char* status_name(Status status) noexcept;

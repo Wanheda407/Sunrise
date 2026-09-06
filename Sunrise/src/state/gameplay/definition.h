@@ -209,6 +209,8 @@ struct PeerLink {
     bool remoteAddressPresent{};
     /** Newest packet sequence received from this peer. */
     std::uint16_t receiveHead{};
+    /** Expanded receive sequence orders sparse entity updates across packet wraps. */
+    std::uint64_t receiveOrdinal{};
     bool ringInitialized{};
     /** Entry `i` is the packet `i + 1` before the head. The head itself carries no entry. */
     std::array<bool, kAckHistory> received{};

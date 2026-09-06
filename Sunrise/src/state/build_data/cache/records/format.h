@@ -6,6 +6,7 @@
 #include <span>
 
 #include "../../../content/content_catalog.h"
+#include "../../../gameplay/external/entity_position_profiles.h"
 #include "../../abilities/definition.h"
 #include "../../collectibles/collectible_catalog.h"
 #include "../../constants/definition.h"
@@ -33,11 +34,12 @@ inline constexpr std::array<char, 8> kCacheMagic{'S', 'U', 'N', 'R', 'I', 'S', '
  * Bump it when a stored shape changes, and when the extraction filling it changes what it writes.
  * A cached row survives a code change, so a corrected walk keeps publishing the old rows.
  *
- * 60: catalyst completion flags retain their package-derived account bank indices.
  * 48: nodes and SObjects joined the unified cache, replacing their incomplete sidecar lifecycle.
+ * 60: entity position profiles and object types joined the cache, with the position fingerprint
+ * in the header.
+ * 61: catalyst completion flags retain their package-derived account bank indices.
  */
-// Upstream's format 45 and the PR's independent format 48 changes are both present.
-inline constexpr std::uint32_t kCacheFormatVersion = 60;
+inline constexpr std::uint32_t kCacheFormatVersion = 61;
 /** Signed -1 on disk means there is no equipment slot. */
 inline constexpr std::int8_t kAbsentEquipmentSlot = -1;
 /** The standard 64-bit FNV-1a offset basis starts the payload checksum. */
@@ -101,8 +103,28 @@ struct Header {
     std::uint32_t vendorDefinitionCount{};
     std::uint32_t vendorSaleRowCount{};
     std::uint32_t vendorInstalledRowCount{};
+    std::uint32_t positionProfileCount{};
+    std::uint32_t objectTypeCount{};
+    gameplay::entity_position_profiles::Fingerprint positionFingerprint{};
     InvestmentConstants constants{};
     std::uint64_t payloadChecksum{};
+};
+
+/** Reciprocal package object-class classification stored in the shared cache. */
+struct ObjectTypeRecord {
+    std::uint32_t rsatTag{}, definitionTag{};
+    std::uint8_t objectType{};
+    std::array<std::byte, 3> reserved{};
+};
+
+/** Disk form of one exact package-derived activity cell and its position grammar. */
+struct PositionProfileRecord {
+    std::array<char, gameplay::entity_position_profiles::kNameCapacity> activity{};
+    std::uint16_t cell{};
+    std::array<std::uint8_t, 3> axisBits{};
+    std::uint8_t bubble{};
+    std::uint8_t nameLength{};
+    std::uint8_t reserved{};
 };
 
 /** Disk form of one named mapping. Its length field has a fixed width. */
@@ -223,7 +245,8 @@ struct ExoticCatalystRecord {
     std::uint16_t progressPlugDefinitionIndex{};
     std::uint16_t effectDefinitionIndex{};
     std::uint16_t acquisitionDefinitionIndex{};
-    std::array<std::uint16_t, items::catalysts::kCompletionFlagCapacity> completionAccountFlagIndices{};
+    std::array<std::uint16_t, items::catalysts::kCompletionFlagCapacity>
+        completionAccountFlagIndices{};
     std::array<std::uint16_t, items::catalysts::kCompletionFlagCapacity>
         completionFlagDefinitionIndices{};
     std::array<std::uint16_t, items::catalysts::kCompletionValueCapacity>
@@ -498,8 +521,9 @@ static_assert(sizeof(Prefix) == kCacheMagic.size() + sizeof(std::uint32_t));
 static_assert(sizeof(InvestmentConstants)
               == constants::kCharacterStatRowCount + 3 * sizeof(std::uint8_t));
 static_assert(sizeof(Header)
-              == kCacheMagic.size() + 30 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
-                     + sizeof(InvestmentConstants));
+              == kCacheMagic.size() + 32 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
+                     + sizeof(InvestmentConstants)
+                     + sizeof(gameplay::entity_position_profiles::Fingerprint));
 static_assert(sizeof(SpawnPointRecord)
               == spawn_sets::kPositionComponents * sizeof(float) + sizeof(std::uint32_t)
                      + sizeof(std::uint16_t) + 2 * sizeof(std::uint8_t));

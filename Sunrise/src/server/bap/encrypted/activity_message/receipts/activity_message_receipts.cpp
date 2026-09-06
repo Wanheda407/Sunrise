@@ -1016,17 +1016,26 @@ Framed frame_authority_release(const message::Request& request, bool expectReaso
            static_cast<unsigned>(decoded.selector),
            decoded.hasReason ? decoded.reason : 0,
            returning);
+    for (std::size_t offset = 0; offset < decoded.mask.size(); offset += sizeof(std::uint32_t)) {
+        const std::uint32_t word = middleware::encoding::read_u32_le(
+            std::span(decoded.mask).subspan(offset).first<sizeof(std::uint32_t)>());
+        if (word != 0)
+            report(core::log::Level::debug,
+                   "ev=activity stage=authority_mask type=%u selector=%u word=%zu bits=0x%08X",
+                   request.messageType,
+                   static_cast<unsigned>(decoded.selector),
+                   offset / sizeof(std::uint32_t),
+                   word);
+    }
     return {Verdict::framed, payload_bits(request)};
 }
 
-/** Frames one purge request. Nothing answers it. */
+/** Frames one purge request before its transactional message-25 answer. */
 Framed frame_request_purge(const message::Request& request) noexcept {
     authority::PurgeRequest decoded{};
     if (!authority::parse_request_purge(request.payload, decoded)) {
         return {report_malformed("purge", request), 0};
     }
-    // The answer would have to name the exact next authority generation, which nothing here
-    // tracks, and the consumer asserts on any other value.
     report(core::log::Level::debug,
            "ev=activity stage=purge result=noted reason=%d mask_bytes=%zu",
            decoded.reason,

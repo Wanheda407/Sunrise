@@ -73,14 +73,26 @@ using DisplacedExternals =
 void notify_external_outcomes(const DisplacedExternals& completed, std::size_t count) noexcept;
 
 /**
- * Tells both session-aware transports that a group session lost its channel state.
- * @param sessions Session ids copied out under the lock.
+ * Tells the lane-0 transport that a group session lost its channel state.
+ * @param sessions
+ * Session ids copied out under the lock.
  * @param count Entries in use.
  */
 void reset_transports(const std::uint64_t* sessions, std::size_t count) noexcept;
 
-/** Tells both session-aware transports that one group session lost its channel state. */
+/** Tells the lane-0 transport that one group session lost its channel state. */
 void reset_transports(std::uint64_t sessionId) noexcept;
+
+/** Copies the exact source before its peer, view, or ActivityClient changes. */
+[[nodiscard]] state::gameplay::entity_identity::Source
+entity_source(const state::gameplay::PeerLink& peer) noexcept;
+
+/** Retires identity evidence before a source changes; the caller holds the peer lock. */
+void invalidate_entity_identity_locked(
+    const state::gameplay::entity_identity::Source& source) noexcept;
+
+/** Retires only the captured source, never a replacement sharing its group. */
+void reset_entity_source(const state::gameplay::entity_identity::Source& source) noexcept;
 
 /** @return Peer for one endpoint, or null. Callers already hold the lock. */
 [[nodiscard]] state::gameplay::PeerLink*

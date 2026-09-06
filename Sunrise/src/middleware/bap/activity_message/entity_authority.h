@@ -29,7 +29,7 @@ inline constexpr std::uint8_t kMaximumSelector = 64;
 inline constexpr std::size_t kSelectorSize = sizeof(std::uint8_t);
 /** The reason on msg 26 and the leading field on msg 27 are 3 bits with bias 1. */
 inline constexpr std::uint8_t kReasonWidth = 3;
-/** The 3-bit reason decodes as wire plus 1, so the logical range is 1 to 8. */
+/** The 3-bit reason decodes as wire minus 1, so the logical range is -1 to 6. */
 inline constexpr std::int32_t kReasonBias = 1;
 /** Msg 26 is one selector byte, the mask, then the 3-bit reason. */
 inline constexpr std::size_t kAbandonBits =

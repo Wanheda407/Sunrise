@@ -132,8 +132,10 @@ struct Definition {
     std::uint16_t acquisitionDefinitionIndex{kUnavailableAcquisitionIndex};
     /** Account rows for the completion flags, or unavailable for override-only slots. */
     std::array<std::uint16_t, kCompletionFlagCapacity> completionAccountFlagIndices{
-        kUnavailableCompletionFlagIndex, kUnavailableCompletionFlagIndex,
-        kUnavailableCompletionFlagIndex, kUnavailableCompletionFlagIndex};
+        kUnavailableCompletionFlagIndex,
+        kUnavailableCompletionFlagIndex,
+        kUnavailableCompletionFlagIndex,
+        kUnavailableCompletionFlagIndex};
     /** Family-5 terms required by the catalyst's active effect item. */
     CompletionRequirements completion{};
     /** Account objective referenced by a legacy progress plug, when present. */

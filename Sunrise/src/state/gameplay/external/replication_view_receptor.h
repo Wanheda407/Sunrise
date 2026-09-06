@@ -80,6 +80,9 @@ public:
     [[nodiscard]] ReceiveResult
     receive(const middleware::gameplay::group::ViewEstablishment& input) noexcept;
 
+    /** @return True after the peer announces stage 3 with its validated signature. */
+    [[nodiscard]] bool accepts_inbound_entities() const noexcept;
+
     /** @return Current externally useful negotiation phase. */
     [[nodiscard]] Phase phase() const noexcept;
     /** @return Process-local generation that owns this negotiation. */

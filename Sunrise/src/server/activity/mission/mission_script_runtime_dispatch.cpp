@@ -325,8 +325,13 @@ void dispatch_intent(RuntimeInstance& instance, std::uint64_t now) noexcept {
             }
             return;
         }
-        const squads::Status status =
-            squads::place_reserved(instance.view, intent.firstRow, counts, mode, reservation);
+        const squads::Status status = squads::place_reserved(instance.view,
+                                                             intent.firstRow,
+                                                             counts,
+                                                             mode,
+                                                             reservation,
+                                                             std::nullopt,
+                                                             intent.squadRetireOnReturn);
         if (status == squads::Status::queued) {
             await_host_commit(instance, now, "squad_enqueued");
         } else if (!abandon_reserved_delivery(instance, reservation)) {

@@ -123,6 +123,12 @@ Receptor::receive(const middleware::gameplay::group::ViewEstablishment& input) n
     return ReceiveResult::accepted;
 }
 
+/** Native publication starts at the peer's stage 3, before its stage-4 transition. */
+bool Receptor::accepts_inbound_entities() const noexcept {
+    return occupied_ && !failed_ && signatureAdopted_ && viewIndex_ >= 0
+           && localStage_ >= kSignatureStage && remoteStage_ >= 3;
+}
+
 /** Returns the current externally useful negotiation phase. */
 Phase Receptor::phase() const noexcept {
     if (!occupied_) {

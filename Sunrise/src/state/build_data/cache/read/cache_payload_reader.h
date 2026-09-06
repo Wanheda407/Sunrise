@@ -47,6 +47,7 @@ void clear(records::MutableDomains output) noexcept;
 [[nodiscard]] bool read_payload(HANDLE file,
                                 const BuildIdentity& build,
                                 const records::InvestmentConstants& constants,
+                                const gameplay::entity_position_profiles::Fingerprint& fingerprint,
                                 const records::DomainCounts& counts,
                                 records::MutableDomains output,
                                 std::uint64_t& checksum) noexcept;

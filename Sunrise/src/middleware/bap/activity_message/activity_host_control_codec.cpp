@@ -29,31 +29,6 @@ constexpr std::uint8_t kBoolWidth = 1;
            && padding == 0 && reader.remaining_bits() == 0;
 }
 
-/** Writes one complete 8,192-bit mask in its retained wire byte order. */
-[[nodiscard]] bool write_mask(bits::Writer& writer,
-                              const entity_slots::EntitySlotMask& mask) noexcept {
-    for (const std::byte value : mask) {
-        if (!writer.write(std::to_integer<std::uint8_t>(value), kByteWidth)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/** Reads one complete 8,192-bit mask without changing it after an underrun. */
-[[nodiscard]] bool read_mask(bits::Reader& reader, entity_slots::EntitySlotMask& mask) noexcept {
-    entity_slots::EntitySlotMask parsed{};
-    for (std::byte& value : parsed) {
-        std::uint64_t raw = 0;
-        if (!reader.read(kByteWidth, raw)) {
-            return false;
-        }
-        value = static_cast<std::byte>(raw);
-    }
-    mask = parsed;
-    return true;
-}
-
 /** Applies the signed midpoint bias before a 32-bit field is packed. */
 [[nodiscard]] constexpr std::uint32_t encode_signed32(std::int32_t value) noexcept {
     return std::bit_cast<std::uint32_t>(value) + kSigned32Bias;
@@ -106,8 +81,8 @@ bool encode_claim_authority(const ClaimAuthorityBody& body,
     }
     bits::Writer writer(output.first(kClaimAuthorityByteCount));
     const std::uint32_t storedReason =
-        static_cast<std::uint32_t>(static_cast<std::int32_t>(body.reason) - kReasonBias);
-    return writer.write(body.epoch, kByteWidth) && write_mask(writer, body.slots)
+        static_cast<std::uint32_t>(static_cast<std::int32_t>(body.reason) + kReasonBias);
+    return writer.write(body.epoch, kByteWidth) && entity_slots::write_mask(writer, body.slots)
            && writer.write(storedReason, kReasonWidth)
            && writer.bit_count() == kClaimAuthorityBitCount && writer.finish(written)
            && written == kClaimAuthorityByteCount;
@@ -122,18 +97,18 @@ bool decode_claim_authority(std::span<const std::byte> input, ClaimAuthorityBody
     ClaimAuthorityBody parsed{};
     std::uint64_t epoch = 0;
     std::uint64_t storedReason = 0;
-    if (!reader.read(kByteWidth, epoch) || !read_mask(reader, parsed.slots)
+    if (!reader.read(kByteWidth, epoch) || !entity_slots::read_mask(reader, parsed.slots)
         || !reader.read(kReasonWidth, storedReason) || !finish_padding(reader)) {
         return false;
     }
     parsed.epoch = static_cast<std::uint8_t>(epoch);
-    parsed.reason = static_cast<std::int8_t>(static_cast<std::int32_t>(storedReason) + kReasonBias);
+    parsed.reason = static_cast<std::int8_t>(static_cast<std::int32_t>(storedReason) - kReasonBias);
     body = parsed;
     return true;
 }
 
 /** Checks one exact message-24 body. */
-bool validate_claim_authority(std::span<const std::byte> input) noexcept {
+bool validate_retirement_authority(std::span<const std::byte> input) noexcept {
     ClaimAuthorityBody body{};
     return decode_claim_authority(input, body);
 }
@@ -148,10 +123,11 @@ bool encode_purge_authority(const PurgeAuthorityBody& body,
     }
     bits::Writer writer(output.first(kPurgeAuthorityByteCount));
     const std::uint32_t storedReason =
-        static_cast<std::uint32_t>(static_cast<std::int32_t>(body.reason) - kReasonBias);
+        static_cast<std::uint32_t>(static_cast<std::int32_t>(body.reason) + kReasonBias);
     return writer.write(storedReason, kReasonWidth) && writer.write(body.epoch, kByteWidth)
-           && write_mask(writer, body.slots) && writer.bit_count() == kPurgeAuthorityBitCount
-           && writer.finish(written) && written == kPurgeAuthorityByteCount;
+           && entity_slots::write_mask(writer, body.slots)
+           && writer.bit_count() == kPurgeAuthorityBitCount && writer.finish(written)
+           && written == kPurgeAuthorityByteCount;
 }
 
 /** Decodes one exact message-25 body. */
@@ -164,11 +140,11 @@ bool decode_purge_authority(std::span<const std::byte> input, PurgeAuthorityBody
     std::uint64_t epoch = 0;
     std::uint64_t storedReason = 0;
     if (!reader.read(kReasonWidth, storedReason) || !reader.read(kByteWidth, epoch)
-        || !read_mask(reader, parsed.slots) || !finish_padding(reader)) {
+        || !entity_slots::read_mask(reader, parsed.slots) || !finish_padding(reader)) {
         return false;
     }
     parsed.epoch = static_cast<std::uint8_t>(epoch);
-    parsed.reason = static_cast<std::int8_t>(static_cast<std::int32_t>(storedReason) + kReasonBias);
+    parsed.reason = static_cast<std::int8_t>(static_cast<std::int32_t>(storedReason) - kReasonBias);
     body = parsed;
     return true;
 }

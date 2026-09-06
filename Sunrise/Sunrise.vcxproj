@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -99,6 +99,7 @@
     <None Include="vendor\lua\UPSTREAM_README" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\state\gameplay\external\entity_object_types.cpp" />
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\core\logging\log.cpp" />
     <ClCompile Include="src\core\logging\snapshot\log_snapshot_ring.cpp" />
@@ -662,6 +663,7 @@
     <ClCompile Include="src\state\build_data\vendors\vendor_expression.cpp" />
     <ClCompile Include="src\client\content\vendors\package_vendor_build.cpp" />
     <ClCompile Include="src\state\build_data\cache\records\cache_hash_name_records.cpp" />
+    <ClCompile Include="src\state\build_data\cache\records\cache_entity_metadata_records.cpp" />
     <ClCompile Include="src\state\build_data\cache\records\cache_detail_links.cpp" />
     <ClCompile Include="src\state\build_data\scenarios\scenario_catalog.cpp" />
     <ClCompile Include="src\state\build_data\spawn_sets\spawn_set_catalog.cpp" />
@@ -1299,6 +1301,7 @@
     <ClInclude Include="src\client\hooks\vendor_banner\vendor_banner_retire.h" />
     <ClInclude Include="src\client\hooks\teleport\runtime.h" />
     <ClInclude Include="src\client\hooks\world_objects\world_object_registry.h" />
+    <ClInclude Include="src\client\hooks\world_objects\world_object_rebind_trace.h" />
     <ClInclude Include="src\client\ui\movement\movement_panel.h" />
     <ClInclude Include="src\client\runtime\internal.h" />
     <ClInclude Include="src\client\runtime\host\game_host_classification.h" />
@@ -2005,6 +2008,27 @@
     <ClInclude Include="src\middleware\gameplay\group\notice_messages.h" />
     <ClInclude Include="src\server\gameplay\group\group_migration_receipts.h" />
     <ClInclude Include="src\core\runtime\server_clock.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\middleware\bap\activity_message\squad_sense_state.cpp" />
+    <ClInclude Include="src\middleware\bap\activity_message\squad_sense_state.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\state\gameplay\external\entity_identity.cpp" />
+    <ClCompile Include="src\server\gameplay\entity_identities.cpp" />
+    <ClCompile Include="src\middleware\gameplay\external\entity_identity_metadata.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\state\gameplay\external\entity_position_profiles.cpp" />
+    <ClCompile Include="src\state\gameplay\external\rsat_decode_plans.cpp" />
+    <ClCompile Include="src\state\gameplay\external\squad_entity_retirement_store.cpp" />
+    <ClCompile Include="src\server\gameplay\squad_entity_retirement.cpp" />
+    <ClCompile Include="src\middleware\content\packages\tables\entity_position_profile_extractor.cpp" />
+    <ClCompile Include="src\client\content\activity\entity_position_profile_build.cpp" />
+    <ClCompile Include="src\client\content\activity\entity_object_type_build.cpp" />
+    <ClCompile Include="src\server\gameplay\entity_position_profile_provider.cpp" />
+    <ClInclude Include="src\state\gameplay\external\entity_position_profiles.h" />
+    <ClInclude Include="src\server\gameplay\entity_position_profile_provider.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\client\hooks\network\investment\investment_socket_menu_routing.cpp" />

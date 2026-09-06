@@ -4,6 +4,13 @@
 #include "format.h"
 
 namespace sunrise::state::build_data::cache::records {
+[[nodiscard]] bool encode(const gameplay::entity_object_types::Row&, ObjectTypeRecord&) noexcept;
+[[nodiscard]] bool decode(const ObjectTypeRecord&, gameplay::entity_object_types::Row&) noexcept;
+
+[[nodiscard]] bool encode(const gameplay::entity_position_profiles::Row&,
+                          PositionProfileRecord&) noexcept;
+[[nodiscard]] bool decode(const PositionProfileRecord&,
+                          gameplay::entity_position_profiles::Row&) noexcept;
 
 [[nodiscard]] bool encode(const content::Definition& value, NamedRecord& record) noexcept;
 [[nodiscard]] bool decode(const NamedRecord& record, content::Definition& value) noexcept;

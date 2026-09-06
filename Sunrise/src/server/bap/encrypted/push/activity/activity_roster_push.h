@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <span>
 
+#include "../../../../gameplay/entity_identities.h"
 #include "../../../internal.h"
 #include "../../activity_message/definition.h"
 
@@ -37,7 +38,8 @@ struct RefreshReport;
     const middleware::bap::activity_message::patch_epoch::PatchEpoch* epoch = nullptr,
     const EffectiveRegion* exactRegion = nullptr,
     bool solicited = false,
-    const RefreshReport* refresh = nullptr) noexcept;
+    const RefreshReport* refresh = nullptr,
+    bool allowEntityRetirement = true) noexcept;
 
 /**
  * Settles a staged roster body that reached the caller.
@@ -52,5 +54,12 @@ void commit_staged_roster(Session& session) noexcept;
  * @param session Connection-owned staged roster, cleared here.
  */
 void discard_staged_roster(Session& session) noexcept;
+
+/** A claim must still match its captured source before the carrying frames are published. */
+[[nodiscard]] bool validate_staged_roster(const Session& session) noexcept;
+
+/** A claim's identities stay fixed until the carrying frames reach caller storage. */
+[[nodiscard]] bool begin_staged_roster_publication(
+    const Session& session, server::gameplay::entity_identities::PublicationLease& lease) noexcept;
 
 } // namespace sunrise::server::bap::encrypted::push::activity

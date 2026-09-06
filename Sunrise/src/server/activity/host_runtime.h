@@ -1,5 +1,4 @@
 #pragma once
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -14,9 +13,11 @@
 #include "../../middleware/bap/activity_message/sense_update.h"
 #include "../../middleware/bap/activity_message/sensor_auth_update.h"
 #include "../../middleware/bap/activity_message/squad_auth_body.h"
+#include "../../middleware/bap/activity_message/squad_sense_state.h"
 #include "../../state/activity/definition.h"
 #include "../../state/activity/receipts/definition.h"
 #include "../../state/build_data/scenarios/definition.h"
+#include "../../state/gameplay/external/squad_entity_retirement.h"
 
 namespace sunrise::server::activity::host {
 
@@ -300,6 +301,13 @@ struct SenseObservationKey final {
     std::uint16_t slotIndex{};
     std::uint8_t slotType{};
 };
+
+/** Copies the squad's merged recovery state for this exact ActivityClient generation. */
+[[nodiscard]] bool
+snapshot_squad_sense(const state::activity::SessionBinding& binding,
+                     std::uint64_t sourceGeneration,
+                     const SenseObservationKey& key,
+                     middleware::bap::activity_message::squad_sense::State& output) noexcept;
 
 /** One latest complete msg-6 object observation with values in its owning snapshot. */
 struct SenseObservation final {
@@ -723,6 +731,7 @@ struct PendingIncident final {
 
 /** Immutable typed body retained byte-for-byte until exact transport staging. */
 struct PendingScriptableOverride final {
+    state::gameplay::squad_entity_retirement::Eligibility squadRetirement{};
     std::array<std::byte,
                middleware::bap::activity_message::sensor_auth_update::kAuthOverrideByteCapacity>
         body{};
@@ -925,16 +934,17 @@ request_type31_override(const state::activity::SessionBinding& binding,
     const ScriptableOutputReservation* reservation = nullptr) noexcept;
 
 /** Queues one squad placement intent for an exact package-derived ClientRef. */
-[[nodiscard]] bool
-request_squad_override(const state::activity::SessionBinding& binding,
-                       const ScriptableTarget& target,
-                       const state::build_data::scenarios::RosterGroup* stateLocalRosterGroup,
-                       std::span<const std::int32_t> requestedCounts,
-                       middleware::bap::activity_message::squad_auth::Mode mode,
-                       std::uint64_t expectedActivityClientGeneration,
-                       std::optional<std::uint32_t> nameHash = std::nullopt,
-                       const ScriptableOutputReservation* reservation = nullptr,
-                       std::array<std::int8_t, 4> authoredProfile = {}) noexcept;
+[[nodiscard]] bool request_squad_override(
+    const state::activity::SessionBinding& binding,
+    const ScriptableTarget& target,
+    const state::build_data::scenarios::RosterGroup* stateLocalRosterGroup,
+    std::span<const std::int32_t> requestedCounts,
+    middleware::bap::activity_message::squad_auth::Mode mode,
+    std::uint64_t expectedActivityClientGeneration,
+    std::optional<std::uint32_t> nameHash = std::nullopt,
+    const ScriptableOutputReservation* reservation = nullptr,
+    std::array<std::int8_t, 4> authoredProfile = {},
+    state::gameplay::squad_entity_retirement::Eligibility squadRetirement = {}) noexcept;
 
 /** Queues one generation-bound activity lifetime state through the serialized output slot. */
 [[nodiscard]] bool

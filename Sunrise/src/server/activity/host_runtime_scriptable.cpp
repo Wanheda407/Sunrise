@@ -6,6 +6,7 @@
 #include "../../middleware/bap/activity_message/sensor_auth_update.h"
 #include "../../state/activity/mission/runtime.h"
 #include "../../state/activity/runtime.h"
+#include "../gameplay/squad_entity_retirement.h"
 #include "host_runtime_internal.h"
 
 namespace sunrise::server::activity::host {
@@ -169,8 +170,9 @@ valid_state_local_group(const ScriptableTarget& target,
 /** @return True when a transport acknowledgement names the retained body byte-for-byte. */
 [[nodiscard]] bool same_pending(const PendingScriptableOverride& left,
                                 const PendingScriptableOverride& right) noexcept {
-    return left.revision == right.revision && left.kind == right.kind
-           && same_target(left.target, right.target) && left.generation == right.generation
+    return left.squadRetirement == right.squadRetirement && left.revision == right.revision
+           && left.kind == right.kind && same_target(left.target, right.target)
+           && left.generation == right.generation
            && left.expectedActivityClientGeneration == right.expectedActivityClientGeneration
            && left.sequence == right.sequence && left.dialogueSequence == right.dialogueSequence
            && left.dialogueCue == right.dialogueCue && left.bitCount == right.bitCount
@@ -363,6 +365,7 @@ void apply_scriptable_control(const ScriptableRequest& request, std::uint64_t no
     pending.revision = request.expectedRevision == 0 ? instance->view.scriptableRevision + 1
                                                      : request.expectedRevision;
     pending.kind = request.kind;
+    pending.squadRetirement = request.squadRetirement;
     pending.expectedActivityClientGeneration = request.expectedActivityClientGeneration;
     std::size_t written = 0;
     std::size_t writtenBits = 0;
@@ -980,16 +983,25 @@ bool request_state_local_dialogue_override(
 }
 
 /** Queues one squad placement intent for an exact package-derived ClientRef. */
-bool request_squad_override(const state::activity::SessionBinding& binding,
-                            const ScriptableTarget& target,
-                            const state::build_data::scenarios::RosterGroup* stateLocalRosterGroup,
-                            std::span<const std::int32_t> requestedCounts,
-                            squad::Mode mode,
-                            std::uint64_t expectedActivityClientGeneration,
-                            std::optional<std::uint32_t> nameHash,
-                            const ScriptableOutputReservation* reservation,
-                            std::array<std::int8_t, 4> authoredProfile) noexcept {
+bool request_squad_override(
+    const state::activity::SessionBinding& binding,
+    const ScriptableTarget& target,
+    const state::build_data::scenarios::RosterGroup* stateLocalRosterGroup,
+    std::span<const std::int32_t> requestedCounts,
+    squad::Mode mode,
+    std::uint64_t expectedActivityClientGeneration,
+    std::optional<std::uint32_t> nameHash,
+    const ScriptableOutputReservation* reservation,
+    std::array<std::int8_t, 4> authoredProfile,
+    state::gameplay::squad_entity_retirement::Eligibility squadRetirement) noexcept {
     const auto rawMode = static_cast<std::uint8_t>(mode);
+    if (squadRetirement.enabled
+        && (squadRetirement.squad.key != target.registryKey
+            || squadRetirement.squad.index != target.slotIndex
+            || squadRetirement.squad.type != target.slotType || squadRetirement.rsatTag == 0
+            || squadRetirement.bubble >= 64
+            || !std::ranges::any_of(requestedCounts, [](auto count) { return count > 0; })))
+        return false;
     if (target.slotType != squad::kSlotType || target.authSchema != squad::kSchema
         || (target.stateLocalRoster
                 ? stateLocalRosterGroup == nullptr
@@ -1012,6 +1024,7 @@ bool request_squad_override(const state::activity::SessionBinding& binding,
     std::ranges::copy(requestedCounts, request.requestedCounts.begin());
     request.requestedCountLength = requestedCounts.size();
     request.squadAuthoredProfile = authoredProfile;
+    request.squadRetirement = squadRetirement;
     request.nameHash = nameHash;
     request.expectedActivityClientGeneration = expectedActivityClientGeneration;
     request.squadMode = mode;
@@ -1297,6 +1310,8 @@ void note_scriptable_transport_staged(const state::activity::SessionBinding& bin
             ReleaseSRWLockExclusive(&g_lock);
             return;
         }
+        server::gameplay::squad_entity_retirement::record_delivered_target(
+            binding, sourceGeneration, pending);
         advance_staged_guard(guard, pending);
         if (pending.kind == ScriptableOverrideKind::lifetime) {
             // Latch the state so every later msg 5 keeps reporting it.
@@ -1317,6 +1332,8 @@ void note_scriptable_transport_staged(const state::activity::SessionBinding& bin
                 ++g_refusedControls;
                 continue;
             }
+            server::gameplay::squad_entity_retirement::record_delivered_target(
+                binding, sourceGeneration, queued);
             advance_staged_guard(queuedGuard, queued);
             event.scriptableRevision = queued.revision;
             append_event(event);

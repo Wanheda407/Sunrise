@@ -30,7 +30,8 @@ constexpr std::uint8_t kSlotTypeLifetime = 17;
 }
 
 /** Writes one MSB-first packed body without copying its padded final bits. */
-[[nodiscard]] bool write_packed(bits::Writer& writer, const AuthOverride& value) noexcept {
+template <typename PackedBody>
+[[nodiscard]] bool write_packed(bits::Writer& writer, const PackedBody& value) noexcept {
     bool encoded = true;
     std::size_t remaining = value.bitCount;
     for (std::size_t index = 0; encoded && remaining != 0; ++index) {
@@ -220,6 +221,16 @@ bool write_object_block(bits::Writer& writer,
     const bool emitSense = (flags & kSlotSenseFlag) != 0;
     const AuthOverride* const override =
         emitAuth ? matching_override(snapshot, objectTag, key, slotType, slotIndex) : nullptr;
+    const SenseOverride* sense = nullptr;
+    if (emitSense) {
+        for (const SenseOverride& candidate : snapshot.senseOverrides) {
+            if (candidate.objectTag == objectTag && candidate.key == key
+                && candidate.slotType == slotType && candidate.slotIndex == slotIndex) {
+                sense = &candidate;
+                break;
+            }
+        }
+    }
     // A mission-seed group is a placeholder with no default body. The spawn gate reads two of
     // them: the player key (this type-13) and the lifetime state (every type-17, because the
     // gate reads whichever registers first). Zeroing those strands the spawn.
@@ -229,7 +240,9 @@ bool write_object_block(bits::Writer& writer,
                                  : (emitAuth && (!missionSeedOnly || spawnBearing)
                                         ? auth_body_bits(snapshot, slotType, carriesPlayerKey)
                                         : 0);
-    const std::size_t remainder = (emitAuth ? 2U : 0U) + (emitSense ? 1U : 0U) + body;
+    // Sense adds its state flag, reset bit, complete delta and 32-bit counter.
+    const std::size_t senseBits = sense != nullptr ? 2U + sense->bitCount + kKeyWidth : 0U;
+    const std::size_t remainder = (emitAuth ? 2U : 0U) + (emitSense ? 1U : 0U) + body + senseBits;
     bool encoded = writer.write(1, kPresenceWidth) && writer.write(key, kKeyWidth)
                    && writer.write(std::uint32_t{slotType} + kSlotTypeBias, kSlotTypeWidth)
                    && writer.write(std::uint32_t{slotIndex} + kSlotIndexBias, kSlotIndexWidth)
@@ -245,9 +258,12 @@ bool write_object_block(bits::Writer& writer,
                           : write_auth_body(writer, snapshot, slotType, carriesPlayerKey);
         }
     }
-    // A sense-present bit of one costs 35 more bits, not one, so it is always sent absent.
     if (encoded && emitSense) {
-        encoded = writer.write(0, kPresenceWidth);
+        encoded = writer.write(sense != nullptr ? 1U : 0U, kPresenceWidth);
+        if (encoded && sense != nullptr) {
+            encoded = writer.write(0, kPresenceWidth) && writer.write(1, kPresenceWidth)
+                      && write_packed(writer, *sense) && writer.write(sense->counter, kKeyWidth);
+        }
     }
     return encoded && writer.bit_count() == start + remainder;
 }

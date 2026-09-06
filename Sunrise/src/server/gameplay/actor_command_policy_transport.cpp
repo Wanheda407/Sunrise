@@ -3,12 +3,17 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
+#include <new>
 
 #include "../../middleware/gameplay/external/actor_command_runtime_codec.h"
 #include "../../middleware/gameplay/external/composite_entity_codec.h"
 #include "../../middleware/gameplay/external/simulation_event_runtime_codec.h"
+#include "../../state/gameplay/external/rsat_decode_plans.h"
 #include "actor_command_policy.h"
 #include "actor_command_policy_internal.h"
+#include "entity_identities.h"
+#include "entity_position_profile_provider.h"
 #include "gameplay_log.h"
 
 namespace sunrise::server::gameplay::actor_command_policy {
@@ -19,8 +24,32 @@ namespace wire = middleware::bap::activity_message::wire_schema;
 
 SRWLOCK g_transportLock = SRWLOCK_INIT;
 external::CompositeEntitySessionStore g_entitySessions{};
+state::gameplay::rsat_decode_plans::Cache g_entityPlans;
 bool g_entityIngressReady{};
 volatile LONG g_lane0DecodeFailures{};
+
+/** The installed plan cache must match the admitted SDK and its extraction manifest. */
+[[nodiscard]] bool load_entity_plans() noexcept {
+    namespace plans = state::gameplay::rsat_decode_plans;
+    try {
+        if (g_entitySessions.catalog == nullptr) return false;
+        plans::Digest sdk{};
+        const auto identity = g_entitySessions.catalog->sdk_build_sha256();
+        if (identity.size() != sdk.size()) return false;
+        std::copy(identity.begin(), identity.end(), sdk.begin());
+        if (!g_entityPlans.load_installed(g_entitySessions.catalog->artifact_directory(), sdk))
+            return false;
+        g_entitySessions.resolvePlan = plans::resolve_plan;
+        g_entitySessions.resolveSchemaLayout = plans::resolve_schema_layout;
+        g_entitySessions.resolveFieldLayout = plans::resolve_field_layout;
+        g_entitySessions.resolveAdditionalSchema = plans::resolve_additional_schema;
+        g_entitySessions.resolveAdditionalField = plans::resolve_additional_field;
+        g_entitySessions.planContext = &g_entityPlans;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
 /** Validates one reflected event body against the current immutable SDK catalog. */
 [[nodiscard]] bool read_event_payload(const void*,
@@ -168,7 +197,7 @@ void reset_lane0_adapter(const void*, std::uint64_t groupSessionId) noexcept {
 
 /** Decodes channel 2 against only the named group's committed baselines. */
 [[nodiscard]] bool read_entity_adapter(const void* context,
-                                       std::uint64_t groupSessionId,
+                                       const state::gameplay::entity_identity::Source& source,
                                        middleware::encoding::bits::Reader& reader,
                                        external::EntityBatch& batch) noexcept {
     if (context == nullptr) {
@@ -176,25 +205,133 @@ void reset_lane0_adapter(const void*, std::uint64_t groupSessionId) noexcept {
     }
     auto& store = *const_cast<external::CompositeEntitySessionStore*>(
         static_cast<const external::CompositeEntitySessionStore*>(context));
-    return external::read_composite_entity_batch(store, groupSessionId, reader, batch);
+    AcquireSRWLockExclusive(&g_transportLock);
+    const bool accepted = external::read_scoped_entity_batch(store, source, reader, batch);
+    ReleaseSRWLockExclusive(&g_transportLock);
+    return accepted;
 }
 
-/** Commits the baseline mirror before applying the retry-safe actor projection. */
-[[nodiscard]] bool accepted_composite_entity_adapter(const void* context,
-                                                     std::uint64_t groupSessionId,
-                                                     const external::EntityBatch& batch) noexcept {
-    return external::accept_composite_entity_batch(context, groupSessionId, batch)
-           && accept_entity_batch(groupSessionId, batch);
+/** Preflight must finish before any other lane commits. */
+[[nodiscard]] bool prepare_entity_adapter(const void* context,
+                                          const state::gameplay::entity_identity::Source& source,
+                                          const external::EntityBatch& batch,
+                                          std::uint16_t sequence,
+                                          bool hasSequence,
+                                          std::uint64_t ordinal,
+                                          external::EntityBaselineMutation& mutation) noexcept {
+    if (context == nullptr) return false;
+    auto& store = *const_cast<external::CompositeEntitySessionStore*>(
+        static_cast<const external::CompositeEntitySessionStore*>(context));
+    AcquireSRWLockExclusive(&g_transportLock);
+    const bool accepted = external::prepare_scoped_entity_batch(
+        store, source, batch, sequence, hasSequence, ordinal, mutation);
+    ReleaseSRWLockExclusive(&g_transportLock);
+    return accepted;
+}
+
+/** The peer lock prevents source changes between preflight and commit. */
+[[nodiscard]] bool
+commit_entity_adapter(const void* context,
+                      const state::gameplay::entity_identity::Source& source,
+                      const external::EntityBaselineMutation& mutation) noexcept {
+    if (context == nullptr) return false;
+    auto& store = *const_cast<external::CompositeEntitySessionStore*>(
+        static_cast<const external::CompositeEntitySessionStore*>(context));
+    AcquireSRWLockExclusive(&g_transportLock);
+    const bool accepted = external::commit_scoped_entity_batch(store, source, mutation);
+    ReleaseSRWLockExclusive(&g_transportLock);
+    return accepted;
+}
+
+/** Observers run only after the complete external packet's acceptance boundary. */
+void observed_entity_adapter(const void* context,
+                             const state::gameplay::entity_identity::Source& source,
+                             const external::EntityBatch& batch,
+                             std::uint16_t packetSequence,
+                             bool hasPacketSequence,
+                             std::uint64_t ordinal,
+                             std::uint64_t tick) noexcept {
+    if (context == nullptr) return;
+    AcquireSRWLockShared(&g_transportLock);
+    const auto catalog =
+        static_cast<const external::CompositeEntitySessionStore*>(context)->catalog;
+    ReleaseSRWLockShared(&g_transportLock);
+    entity_identities::observe(source,
+                               batch,
+                               catalog,
+                               packetSequence,
+                               hasPacketSequence,
+                               ordinal,
+                               tick,
+                               batch.allocationEpoch,
+                               batch.hasAllocationEpoch,
+                               batch.allocationDomain);
+    const external::EntityBatch* projected = &batch;
+    std::unique_ptr<external::EntityBatch> filtered;
+    if (batch.ignoredRecordMask != 0) {
+        filtered.reset(new (std::nothrow) external::EntityBatch{});
+        if (!filtered) return;
+        *filtered = batch;
+        std::size_t count = 0;
+        for (std::size_t index = 0; index < external::entity_record_count(batch); ++index)
+            if ((batch.ignoredRecordMask & (1U << index)) == 0)
+                external::entity_record_at(*filtered, count++) =
+                    external::entity_record_at(batch, index);
+        if (count == 0) return;
+        filtered->recordPresent = true;
+        filtered->additionalRecordCount = static_cast<std::uint8_t>(count - 1);
+        filtered->ignoredRecordMask = 0;
+        projected = filtered.get();
+    }
+    if (!accept_entity_batch(source.groupSessionId, *projected)) {
+        report(core::log::Level::debug,
+               "ev=entity_identity stage=actor_projection result=unavailable");
+    }
+}
+
+/** Host epoch changes reset serial admission without erasing retained allocation evidence. */
+void advance_entity_epoch_adapter(const void* context,
+                                  const state::gameplay::entity_identity::Source& source,
+                                  std::uint8_t expected,
+                                  std::uint8_t next,
+                                  std::uint64_t domain) noexcept {
+    if (context == nullptr) return;
+    auto& store = *const_cast<external::CompositeEntitySessionStore*>(
+        static_cast<const external::CompositeEntitySessionStore*>(context));
+    AcquireSRWLockExclusive(&g_transportLock);
+    const bool advanced =
+        external::advance_scoped_entity_epoch(store, source, expected, next, domain);
+    ReleaseSRWLockExclusive(&g_transportLock);
+    if (!advanced)
+        report(core::log::Level::debug, "ev=entity_identity stage=allocation_epoch result=stale");
+}
+
+/** Delivered retirements cannot erase a replacement that reused the same network slot. */
+std::size_t retire_entity_adapter(
+    const void* context,
+    const state::gameplay::entity_identity::Source& source,
+    std::span<const state::gameplay::entity_identity::RetiredLifetime> lifetimes) noexcept {
+    if (context == nullptr) return 0;
+    auto& store = *const_cast<external::CompositeEntitySessionStore*>(
+        static_cast<const external::CompositeEntitySessionStore*>(context));
+    AcquireSRWLockExclusive(&g_transportLock);
+    const auto retired = external::retire_scoped_entity_baselines(store, source, lifetimes);
+    ReleaseSRWLockExclusive(&g_transportLock);
+    return retired;
 }
 
 /** Removes every update-only baseline owned by one replaced group view. */
-void reset_entity_adapter(const void* context, std::uint64_t groupSessionId) noexcept {
+void reset_entity_adapter(const void* context,
+                          const state::gameplay::entity_identity::Source& source) noexcept {
     if (context == nullptr) {
         return;
     }
     auto& store = *const_cast<external::CompositeEntitySessionStore*>(
         static_cast<const external::CompositeEntitySessionStore*>(context));
-    external::reset_composite_entity_session(store, groupSessionId);
+    AcquireSRWLockExclusive(&g_transportLock);
+    external::reset_scoped_entity_session(store, source);
+    ReleaseSRWLockExclusive(&g_transportLock);
+    entity_identities::reset_source(source);
 }
 
 } // namespace
@@ -211,16 +348,25 @@ void internal::shutdown_entity_transport() noexcept {
     peer::install_entity_codec({}, nullptr, nullptr);
     AcquireSRWLockExclusive(&g_transportLock);
     g_entityIngressReady = false;
-    g_entitySessions = {};
+    external::reset_composite_entity_sessions(g_entitySessions);
     ReleaseSRWLockExclusive(&g_transportLock);
+    entity_identities::reset();
 }
 
 /** Installs one bounded baseline store shared only through session-aware callbacks. */
 bool install_entity_transport() noexcept {
     (void)InterlockedExchange(&g_lane0DecodeFailures, 0);
+    peer::install_entity_transport({});
+    entity_identities::reset();
     AcquireSRWLockExclusive(&g_transportLock);
+    g_entityIngressReady = false;
     const bool initialized = external::initialize_composite_entity_sessions(
-        g_entitySessions, external::SobjectPositionCompression::disabled);
+                                 g_entitySessions, external::SobjectPositionCompression::disabled)
+                             && load_entity_plans();
+    if (initialized) {
+        g_entitySessions.resolvePosition = &resolve_entity_position_profile;
+        g_entitySessions.positionContext = nullptr;
+    }
     ReleaseSRWLockExclusive(&g_transportLock);
     if (!initialized) {
         return false;
@@ -229,13 +375,18 @@ bool install_entity_transport() noexcept {
     peer::EntityTransport transport{};
     transport.context = &g_entitySessions;
     transport.read = &read_entity_adapter;
-    transport.accepted = &accepted_composite_entity_adapter;
+    transport.prepare = &prepare_entity_adapter;
+    transport.commit = &commit_entity_adapter;
     transport.reset = &reset_entity_adapter;
+    transport.retire = &retire_entity_adapter;
+    transport.advanceEpoch = &advance_entity_epoch_adapter;
+    transport.observed = &observed_entity_adapter;
     peer::install_entity_transport(transport);
     peer::install_entity_codec({}, nullptr, nullptr);
     AcquireSRWLockExclusive(&g_transportLock);
     g_entityIngressReady = true;
     ReleaseSRWLockExclusive(&g_transportLock);
+    report(core::log::Level::info, "ev=entity_identity stage=transport result=ready");
     return true;
 }
 
