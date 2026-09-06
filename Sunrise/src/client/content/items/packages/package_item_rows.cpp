@@ -1,6 +1,7 @@
 #include <array>
 #include <cstring>
 #include <span>
+#include <vector>
 
 #include "../../../../middleware/content/packages/tables/definition_index_table.h"
 #include "../../../../state/build_data/items/catalysts/exotic_catalyst_builder.h"
@@ -16,7 +17,7 @@ namespace {
 namespace build_details = state::build_data::items::details;
 namespace build_items = state::build_data::items;
 
-/** Reads the native account bank mapping without borrowing the item-table scratch blob. */
+/** Reads the package's account flag-map table into its own blob, leaving the item blobs alone. */
 [[nodiscard]] bool read_catalyst_account_mappings(
     const reader::Source& source,
     Storage& storage,
@@ -27,9 +28,8 @@ namespace build_items = state::build_data::items;
     if (!tables::slot_tag(storage.root, tables::kUnlockFlagMapTableSlot, tag) || tag == 0
         || tables::package_of(tag) == tables::kAbsentPackageId
         || !reader::read_tag(source, storage.scratch, tag, blob)
-        || !tables::find_array_at(blob, tables::kAccountFlagMapDescriptor, rows)
-        || rows.count == 0 || rows.count > state::unlocks::kAccountFlagCapacity
-        || rows.dataOffset > blob.size()
+        || !tables::find_array_at(blob, tables::kAccountFlagMapDescriptor, rows) || rows.count == 0
+        || rows.count > state::unlocks::kAccountFlagCapacity || rows.dataOffset > blob.size()
         || rows.count > (blob.size() - rows.dataOffset) / tables::kUnlockMapRowStride) {
         return false;
     }

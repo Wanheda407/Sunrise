@@ -36,12 +36,12 @@ inline constexpr std::array<char, 8> kCacheMagic{'S', 'U', 'N', 'R', 'I', 'S', '
  * A cached row survives a code change, so a corrected walk keeps publishing the old rows.
  * Development builds wrote formats 46 through 49, so those numbers cannot be reused.
  *
- * 60: catalyst completion flags retain their package-derived account bank indices.
  * 48: nodes and SObjects joined the unified cache, replacing their incomplete sidecar lifecycle.
  * 60: entity position profiles and object types joined the cache, with the position fingerprint
  * in the header.
+ * 61: catalyst completion flags retain their package-derived account bank indices.
  */
-inline constexpr std::uint32_t kCacheFormatVersion = 60;
+inline constexpr std::uint32_t kCacheFormatVersion = 61;
 /** Signed -1 on disk means there is no equipment slot. */
 inline constexpr std::int8_t kAbsentEquipmentSlot = -1;
 /** The standard 64-bit FNV-1a offset basis starts the payload checksum. */
@@ -248,7 +248,8 @@ struct ExoticCatalystRecord {
     std::uint16_t progressPlugDefinitionIndex{};
     std::uint16_t effectDefinitionIndex{};
     std::uint16_t acquisitionDefinitionIndex{};
-    std::array<std::uint16_t, items::catalysts::kCompletionFlagCapacity> completionAccountFlagIndices{};
+    std::array<std::uint16_t, items::catalysts::kCompletionFlagCapacity>
+        completionAccountFlagIndices{};
     std::array<std::uint16_t, items::catalysts::kCompletionFlagCapacity>
         completionFlagDefinitionIndices{};
     std::array<std::uint16_t, items::catalysts::kCompletionValueCapacity>

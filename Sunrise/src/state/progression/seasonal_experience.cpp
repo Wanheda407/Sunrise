@@ -135,8 +135,11 @@ upsert_value(Family5State& family, std::uint16_t slot, std::int32_t value) noexc
     std::size_t write = 0;
     for (std::size_t index = 0; index < family.flagCount; ++index) {
         const auto row = family.flags[index];
-        if (row.slot != 0 && std::find(kArtifactModFlags.begin(), kArtifactModFlags.end(), row.slot)
-                                != kArtifactModFlags.end()) {
+        // The table marks the sale row without a flag with 0, which must not strip an authored
+        // slot-0 row.
+        if (row.slot != 0
+            && std::find(kArtifactModFlags.begin(), kArtifactModFlags.end(), row.slot)
+                   != kArtifactModFlags.end()) {
             continue;
         }
         family.flags[write++] = row;

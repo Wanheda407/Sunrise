@@ -287,12 +287,14 @@ bool append_investment_overrides(state::Family5State& family) noexcept {
         }
         for (std::size_t flag = 0; flag < definition.completion.flagCount; ++flag) {
             const auto slot = definition.completion.flags[flag];
-            const bool authored = std::any_of(candidate.flags.begin(),
-                                               candidate.flags.begin() + candidate.flagCount,
-                                               [slot](const auto& row) { return row.slot == slot; });
+            // A mapped completion rides in the account bank, so it takes a Family-5 row only when
+            // the state already carries one for that slot, which is then raised to the set value.
+            const bool present = std::any_of(candidate.flags.begin(),
+                                             candidate.flags.begin() + candidate.flagCount,
+                                             [slot](const auto& row) { return row.slot == slot; });
             if ((definition.completionAccountFlagIndices[flag] == kUnavailableCompletionFlagIndex
-                 || authored)
-                && !upsert_flag(candidate, definition.completion.flags[flag])) {
+                 || present)
+                && !upsert_flag(candidate, slot)) {
                 return false;
             }
         }
@@ -312,6 +314,7 @@ bool append_account_completions(std::span<std::uint8_t> flags) noexcept {
         return true;
     }
     const std::shared_lock guard(g_lock);
+    // Range-check every mapping first, so one outside the bank leaves the input untouched.
     for (const Definition& definition : g_definitions.rows()) {
         if (definition.availability != Availability::released) {
             continue;
