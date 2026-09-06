@@ -1357,8 +1357,10 @@ bool request_replication_epoch(const state::activity::SessionBinding& binding,
     const std::lock_guard lock(g_lock);
     std::size_t count = 0;
     Session* const session = unique_mutable_activity_link_locked(binding, count);
-    bool queued = session != nullptr && expectedGeneration != 0
-                  && session->activity.bindingGeneration == expectedGeneration;
+    bool queued =
+        session != nullptr && expectedGeneration != 0
+        && session->activity.bindingGeneration == expectedGeneration
+        && generation == static_cast<std::uint8_t>(session->activity.replicationEpoch + 1U);
     if (queued) {
         ReplicationEpochPublication& request = session->activityReplicationEpoch;
         queued = !request.pending
@@ -1828,7 +1830,8 @@ bool request_activity_squad_override(
     std::int32_t expectedRegion,
     std::uint64_t expectedGeneration,
     const activity::host::ScriptableOutputReservation* reservation,
-    std::array<std::int8_t, 4> authoredProfile) noexcept {
+    std::array<std::int8_t, 4> authoredProfile,
+    state::gameplay::squad_entity_retirement::Eligibility squadRetirement) noexcept {
     const std::lock_guard lock(g_lock);
     std::size_t linkCount = 0;
     const Session* const session = unique_activity_link_locked(binding, linkCount);
@@ -1848,7 +1851,8 @@ bool request_activity_squad_override(
                                                                   expectedGeneration,
                                                                   nameHash,
                                                                   reservation,
-                                                                  authoredProfile);
+                                                                  authoredProfile,
+                                                                  squadRetirement);
     return queued;
 }
 

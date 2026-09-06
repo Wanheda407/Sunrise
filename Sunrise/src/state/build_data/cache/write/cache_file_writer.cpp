@@ -40,7 +40,9 @@ namespace {
            && domains.vendorIndex.size() <= kMaximumCount
            && domains.vendorDefinitions.size() <= kMaximumCount
            && domains.vendorSaleRows.size() <= kMaximumCount
-           && domains.vendorInstalledRows.size() <= kMaximumCount;
+           && domains.vendorInstalledRows.size() <= kMaximumCount
+           && domains.positionProfiles.size() <= kMaximumCount
+           && domains.objectTypes.size() <= kMaximumCount;
 }
 
 /** @return True when the requested final-name rule is one of the declared values. */

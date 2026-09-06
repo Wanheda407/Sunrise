@@ -15,7 +15,7 @@ namespace {
            && counts.materialRequirementSets != 0 && counts.socketPlugRules != 0
            && counts.socketPlugPools != 0 && counts.inventoryBuckets != 0
            && counts.socketEntryLists != 0 && counts.progressions != 0 && counts.scenarios != 0
-           && counts.rosterGroups != 0;
+           && counts.rosterGroups != 0 && counts.positionProfiles != 0 && counts.objectTypes != 0;
 }
 
 /** @return True when every count fits the output storage. */
@@ -46,7 +46,9 @@ namespace {
            && counts.vendorIndex <= output.vendorIndex.size()
            && counts.vendorDefinitions <= output.vendorDefinitions.size()
            && counts.vendorSaleRows <= output.vendorSaleRows.size()
-           && counts.vendorInstalledRows <= output.vendorInstalledRows.size();
+           && counts.vendorInstalledRows <= output.vendorInstalledRows.size()
+           && counts.positionProfiles <= output.positionProfiles.size()
+           && counts.objectTypes <= output.objectTypes.size();
 }
 
 /** @return The header's row counts, as platform sizes. */
@@ -80,6 +82,8 @@ namespace {
         header.vendorDefinitionCount,
         header.vendorSaleRowCount,
         header.vendorInstalledRowCount,
+        header.positionProfileCount,
+        header.objectTypeCount,
     };
 }
 
@@ -137,7 +141,8 @@ LoadStatus load(const wchar_t* path,
                 records::DomainCounts& counts) noexcept {
     counts = {};
     read::clear(output);
-    if (path == nullptr || expectedBuild.imageSize == 0 || output.constants == nullptr) {
+    if (path == nullptr || expectedBuild.imageSize == 0 || output.constants == nullptr
+        || output.positionFingerprint == nullptr) {
         return LoadStatus::invalid;
     }
     const HANDLE file = CreateFileW(path,
@@ -185,8 +190,13 @@ LoadStatus load(const wchar_t* path,
     bool valid = required_domains_present(pendingCounts) && counts_fit(pendingCounts, output)
                  && read::expected_size(pendingCounts, expectedSize)
                  && static_cast<std::uint64_t>(actualSize.QuadPart) == expectedSize
-                 && read::read_payload(
-                     file, expectedBuild, header.constants, pendingCounts, output, checksum)
+                 && read::read_payload(file,
+                                       expectedBuild,
+                                       header.constants,
+                                       header.positionFingerprint,
+                                       pendingCounts,
+                                       output,
+                                       checksum)
                  && checksum == header.payloadChecksum;
     const LoadStatus status = close_with(file, valid ? LoadStatus::loaded : LoadStatus::invalid);
     if (status != LoadStatus::loaded) {
@@ -197,6 +207,7 @@ LoadStatus load(const wchar_t* path,
     counts = pendingCounts;
     // Header scalars commit with the counts, on the same clean-close path as the record arrays.
     *output.constants = header.constants;
+    *output.positionFingerprint = header.positionFingerprint;
     return LoadStatus::loaded;
 }
 

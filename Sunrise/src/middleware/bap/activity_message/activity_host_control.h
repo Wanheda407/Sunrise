@@ -38,18 +38,18 @@ inline constexpr std::size_t kPerfRequestKillByteCount = kPerfRequestKillBitCoun
 inline constexpr std::size_t kPerfRequestReflectBitCount = 1;
 inline constexpr std::size_t kPerfRequestReflectByteCount = 1;
 
-/** Three-bit bias-one values have a logical range of 1 through 8. */
-inline constexpr std::int8_t kMinimumReason = 1;
-inline constexpr std::int8_t kMaximumReason = 8;
+/** Three-bit bias-one values decode to -1 through 6. */
+inline constexpr std::int8_t kMinimumReason = -1;
+inline constexpr std::int8_t kMaximumReason = 6;
 
-/** Complete message-24 body. The mask remains in exact wire byte order. */
+/** Complete message-24 body. The mask uses canonical slot bytes. */
 struct ClaimAuthorityBody final {
     entity_slots::EntitySlotMask slots{};
     std::uint8_t epoch{};
     std::int8_t reason{};
 };
 
-/** Complete message-25 body. The mask remains in exact wire byte order. */
+/** Complete message-25 body. The mask uses canonical slot bytes. */
 struct PurgeAuthorityBody final {
     entity_slots::EntitySlotMask slots{};
     std::uint8_t epoch{};
@@ -88,7 +88,7 @@ struct PerfRequestReflectBody final {
 [[nodiscard]] bool decode_claim_authority(std::span<const std::byte> input,
                                           ClaimAuthorityBody& body) noexcept;
 /** @return True when the input is one complete message-24 body. */
-[[nodiscard]] bool validate_claim_authority(std::span<const std::byte> input) noexcept;
+[[nodiscard]] bool validate_retirement_authority(std::span<const std::byte> input) noexcept;
 
 /** Encodes one complete message-25 body without changing a refused output buffer. */
 [[nodiscard]] bool encode_purge_authority(const PurgeAuthorityBody& body,

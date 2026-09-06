@@ -25,6 +25,7 @@ struct IncidentRequest final {
 
 /** One queued typed ClientRef request; its counter is assigned by the reducer. */
 struct ScriptableRequest final {
+    state::gameplay::squad_entity_retirement::Eligibility squadRetirement{};
     state::activity::SessionBinding binding{};
     ScriptableTarget target{};
     state::build_data::scenarios::RosterGroup stateLocalRosterGroup{};
@@ -137,10 +138,18 @@ struct SceneSenseTrace final {
     bool capacityReported{};
 };
 
+/** Merged client-reported recovery state for one squad slot. */
+struct SquadSenseRecord final {
+    SenseObservationKey key{};
+    middleware::bap::activity_message::squad_sense::State state{};
+};
+
 /** Mutable per-instance storage kept behind the runtime lock. */
 struct Instance final {
     InstanceSnapshot view{};
     SenseObservationSnapshot senseObservations{};
+    std::vector<SquadSenseRecord> squadSense{};
+    std::uint64_t squadSenseSourceGeneration{};
     SceneSenseTrace sceneSenseTrace{};
     std::array<ScriptableGuard, kScriptableGuardCapacity> scriptableGuards{};
     /** Latest delivered body for every full ClientRef, re-emitted by every later msg-5 body. */

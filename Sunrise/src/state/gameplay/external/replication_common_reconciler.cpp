@@ -1,5 +1,7 @@
 #include "replication_common_reconciler.h"
 
+#include <limits>
+
 namespace sunrise::state::gameplay::external::common_reconciler {
 
 /** Clears every retained identity and generation. */
@@ -17,6 +19,7 @@ bool Reconciler::open(std::uint64_t activitySessionId,
     }
     activitySessionId_ = activitySessionId;
     ownerGeneration_ = ownerGeneration;
+    allocationDomain_ = 1;
     patchEpoch_ = {patchEpoch.first, patchEpoch.second};
     phase_ = Phase::awaitingInitial;
     return true;
@@ -68,6 +71,10 @@ Reconciler::observe(const middleware::gameplay::external::CommonState& common) n
     if (phase_ == Phase::ready && observed == requestedGeneration_) {
         return ObserveResult::ready;
     }
+    if (phase_ == Phase::ready && hasPreviousHostGeneration_
+        && observed == previousHostGeneration_) {
+        return ObserveResult::awaitingRequestedGeneration;
+    }
     return fail(ObserveResult::unexpectedGeneration);
 }
 
@@ -88,6 +95,52 @@ bool Reconciler::commit_request() noexcept {
     }
     phase_ = Phase::awaitingConfirmation;
     return true;
+}
+
+/**
+ * A host-authored epoch keeps the peer's identity and retained entity state intact.
+ * @param expected Epoch preceding the committed host operation.
+ * @param next Epoch carried by that operation.
+ * @return True only for the next epoch of a ready view.
+ */
+bool Reconciler::advance_host_epoch(std::uint8_t expected, std::uint8_t next) noexcept {
+    if (phase_ != Phase::ready || requestedGeneration_ != expected
+        || next != static_cast<std::uint8_t>(expected + 1U)
+        || allocationDomain_ == (std::numeric_limits<std::uint64_t>::max)()) {
+        return false;
+    }
+    previousHostGeneration_ = expected;
+    hasPreviousHostGeneration_ = true;
+    requestedGeneration_ = next;
+    ++allocationDomain_;
+    entityEpochConfirmed_ = false;
+    firstEntityEpochOrdinal_ = 0;
+    return true;
+}
+
+/**
+ * Untagged packets need an accepted current-epoch packet at an earlier ordinal.
+ * @param common Validated common root, or null when omitted from this packet.
+ * @param packetOrdinal Expanded packet sequence within the current peer channel.
+ * @param hasPacketOrdinal Whether the packet carries a sequence.
+ * @return True only when the entity batch belongs to the current allocation domain.
+ */
+bool Reconciler::qualify_entities(const middleware::gameplay::external::CommonState* common,
+                                  std::uint64_t packetOrdinal,
+                                  bool hasPacketOrdinal) noexcept {
+    if (phase_ != Phase::ready) return false;
+    if (common) {
+        if (validate(*common) != ObserveResult::ready
+            || common->entries[0].reconciliationGeneration != requestedGeneration_)
+            return false;
+        if (hasPacketOrdinal) {
+            if (!entityEpochConfirmed_ || packetOrdinal < firstEntityEpochOrdinal_)
+                firstEntityEpochOrdinal_ = packetOrdinal;
+            entityEpochConfirmed_ = true;
+        }
+        return true;
+    }
+    return entityEpochConfirmed_ && hasPacketOrdinal && packetOrdinal >= firstEntityEpochOrdinal_;
 }
 
 /** Copies the exact one-entry common root only after the client confirms it. */

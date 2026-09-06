@@ -6,6 +6,7 @@
 #include "../../../middleware/gameplay/peer/established_packet.h"
 #include "../association/association_host.h"
 #include "../dtls/dtls_host.h"
+#include "../entity_identities.h"
 #include "peer_transport_internal.h"
 
 namespace sunrise::server::gameplay::peer {
@@ -91,23 +92,56 @@ void notify_external_outcomes(const DisplacedExternals& completed, std::size_t c
     }
 }
 
-/** Tells both session-aware transports that a group session lost its channel state. */
+/** Tells the lane-0 transport that a group session lost its channel state. */
 void reset_transports(const std::uint64_t* sessions, std::size_t count) noexcept {
     if (g_lane0Transport.reset != nullptr) {
         for (std::size_t index = 0; index < count; ++index) {
             g_lane0Transport.reset(g_lane0Transport.context, sessions[index]);
         }
     }
-    if (g_entityTransport.reset != nullptr) {
-        for (std::size_t index = 0; index < count; ++index) {
-            g_entityTransport.reset(g_entityTransport.context, sessions[index]);
-        }
-    }
 }
 
-/** Tells both session-aware transports that one group session lost its channel state. */
+/** Tells the lane-0 transport that one group session lost its channel state. */
 void reset_transports(std::uint64_t sessionId) noexcept {
     reset_transports(&sessionId, 1);
+}
+
+/** Source retirement follows peer-to-identity lock order and waits for publication leases. */
+void invalidate_entity_identity_locked(const gp::entity_identity::Source& source) noexcept {
+    if (source.groupSessionId != 0) entity_identities::reset_source(source);
+}
+
+/** Retires only the captured source, never a replacement sharing its group. */
+void reset_entity_source(const gp::entity_identity::Source& source) noexcept {
+    if (source.groupSessionId == 0) return;
+    AcquireSRWLockShared(&g_lock);
+    if (g_entityTransport.reset != nullptr) {
+        g_entityTransport.reset(g_entityTransport.context, source);
+    }
+    ReleaseSRWLockShared(&g_lock);
+}
+
+/**
+ * Copies the admitted source while its peer is locked.
+ * @param peer Peer whose lifecycle is
+ * being read or changed.
+ * @return Exact current entity source.
+ */
+gp::entity_identity::Source entity_source(const gp::PeerLink& peer) noexcept {
+    gp::entity_identity::Source source{};
+    source.activitySessionId = peer.activityBinding.sessionId;
+    source.activityRevision = peer.activityBinding.createdRevision;
+    source.activityClientGeneration = peer.commonReconciler.owner_generation();
+    source.groupSessionId = peer.externalGroupSessionId;
+    source.peerGeneration = peer.peerGeneration;
+    source.channelGeneration = peer.channelGeneration;
+    source.viewGeneration = peer.viewGeneration;
+    source.address = peer.endpoint.address;
+    source.port = peer.endpoint.port;
+    source.localPort = peer.endpoint.localPort;
+    source.localConnectionSequence = peer.localConnectionSequence;
+    source.remoteConnectionSequence = peer.remoteConnectionSequence;
+    return source;
 }
 
 /** @return Peer for one endpoint, or null. Callers already hold the lock. */
@@ -198,6 +232,19 @@ void install_entity_transport(const EntityTransport& transport) noexcept {
     AcquireSRWLockExclusive(&g_lock);
     g_entityTransport = transport;
     ReleaseSRWLockExclusive(&g_lock);
+}
+
+/** Retirement is serialized with packet decode before entering the codec's own lock. */
+std::size_t retire_entity_baselines(
+    const state::gameplay::entity_identity::Source& source,
+    std::span<const state::gameplay::entity_identity::RetiredLifetime> lifetimes) noexcept {
+    AcquireSRWLockExclusive(&g_lock);
+    const auto retired =
+        g_entityTransport.retire == nullptr
+            ? 0
+            : g_entityTransport.retire(g_entityTransport.context, source, lifetimes);
+    ReleaseSRWLockExclusive(&g_lock);
+    return retired;
 }
 
 /** Installs the process-lifetime channel-2 codec and accepted-record sink. */
@@ -301,6 +348,7 @@ ViewStageResult receive_view_stage(const gp::Endpoint& from,
     DisplacedExternals displaced{};
     std::size_t displacedCount = 0;
     std::uint64_t resetSessionId = 0;
+    gp::entity_identity::Source resetSource{};
     AcquireSRWLockExclusive(&g_lock);
     gp::PeerLink* const peer = find_locked(from);
     if (peer == nullptr) {
@@ -310,6 +358,8 @@ ViewStageResult receive_view_stage(const gp::Endpoint& from,
     auto& receptor = peer->viewReceptor;
     bool accepted = false;
     if (receptor.phase() == gp::external::view_receptor::Phase::closed) {
+        resetSource = entity_source(*peer);
+        invalidate_entity_identity_locked(resetSource);
         ++peer->viewGeneration;
         if (peer->viewGeneration == 0) {
             ++peer->viewGeneration;
@@ -354,6 +404,7 @@ ViewStageResult receive_view_stage(const gp::Endpoint& from,
     if (resetSessionId != 0) {
         reset_transports(resetSessionId);
     }
+    reset_entity_source(resetSource);
     return accepted ? ViewStageResult::accepted : ViewStageResult::refused;
 }
 
@@ -414,8 +465,11 @@ bool open_external_common(
     DisplacedExternals displaced{};
     std::size_t displacedCount = 0;
     std::uint64_t resetSessionId = 0;
+    gp::entity_identity::Source resetSource{};
     AcquireSRWLockExclusive(&g_lock);
     gp::PeerLink* const peer = find_locked(endpoint);
+    const auto previousSource =
+        peer != nullptr ? entity_source(*peer) : gp::entity_identity::Source{};
     const bool same =
         peer != nullptr && peer->externalGroupSessionId == groupSessionId
         && peer->activityBinding.sessionId == activity.sessionId
@@ -423,12 +477,24 @@ bool open_external_common(
         && peer->commonReconciler.owner_generation() == activityClientGeneration
         && peer->commonReconciler.phase() != gp::external::common_reconciler::Phase::closed
         && peer->commonReconciler.phase() != gp::external::common_reconciler::Phase::failed;
+    auto nextReconciler =
+        peer != nullptr ? peer->commonReconciler : gp::external::common_reconciler::Reconciler{};
     const bool opened =
         same
         || (peer != nullptr && peer->viewGeneration != 0
-            && peer->commonReconciler.open_known(
+            && nextReconciler.open_known(
                 activity.sessionId, patchEpoch, activityClientGeneration, replicationEpoch));
     if (opened) {
+        auto nextSource = previousSource;
+        nextSource.activitySessionId = activity.sessionId;
+        nextSource.activityRevision = activity.createdRevision;
+        nextSource.activityClientGeneration = nextReconciler.owner_generation();
+        nextSource.groupSessionId = groupSessionId;
+        if (nextSource != previousSource) {
+            resetSource = previousSource;
+            invalidate_entity_identity_locked(resetSource);
+        }
+        peer->commonReconciler = nextReconciler;
         peer->activityBinding = activity;
         if (!same) {
             resetSessionId = peer->externalGroupSessionId;
@@ -443,7 +509,52 @@ bool open_external_common(
     if (resetSessionId != 0) {
         reset_transports(resetSessionId);
     }
+    reset_entity_source(resetSource);
     return opened;
+}
+
+/**
+ * Advances matching views without replacing their entity source or baseline store.
+ * @param
+ * activity Exact admitted activity binding.
+ * @param activityClientGeneration Owner of the
+ * committed host operation.
+ * @param expectedEpoch Previously authored epoch.
+ * @param nextEpoch
+ * Epoch carried by the committed operation.
+ * @return Number of views whose epoch advanced.
+ */
+std::size_t commit_replication_epoch(const state::activity::SessionBinding& activity,
+                                     std::uint64_t activityClientGeneration,
+                                     std::uint8_t expectedEpoch,
+                                     std::uint8_t nextEpoch) noexcept {
+    if (activity.sessionId == 0 || activity.createdRevision == 0 || activityClientGeneration == 0)
+        return 0;
+    std::size_t advanced = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    for (gp::PeerLink& peer : g_peers) {
+        if (peer.stage == gp::PeerStage::absent || peer.externalGroupSessionId == 0
+            || peer.activityBinding.sessionId != activity.sessionId
+            || peer.activityBinding.createdRevision != activity.createdRevision
+            || peer.commonReconciler.owner_generation() != activityClientGeneration
+            || !peer.commonReconciler.advance_host_epoch(expectedEpoch, nextEpoch))
+            continue;
+        const auto source = entity_source(peer);
+        const auto domain = peer.commonReconciler.allocation_domain();
+        if (g_entityTransport.advanceEpoch != nullptr)
+            g_entityTransport.advanceEpoch(
+                g_entityTransport.context, source, expectedEpoch, nextEpoch, domain);
+        static_cast<void>(
+            entity_identities::advance_epoch(source, expectedEpoch, nextEpoch, domain));
+        peer.commonCommitted = false;
+        for (auto& contribution : peer.externalContributions) {
+            contribution.commonPresent = false;
+        }
+        peer.acknowledgementOwed = true;
+        ++advanced;
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return advanced;
 }
 
 /** Reports whether every native outbound gate is open. */
@@ -510,9 +621,14 @@ bool link_identity(std::uint64_t sessionId, LinkIdentity& output) noexcept {
 void drop(std::uint64_t sessionId) noexcept {
     DisplacedExternals displaced{};
     std::size_t displacedCount = 0;
+    gp::entity_identity::Source resetSource{};
     AcquireSRWLockExclusive(&g_lock);
     gp::PeerLink* const peer = find_session_locked(sessionId);
     if (peer != nullptr) {
+        if (peer->externalGroupSessionId == sessionId) {
+            resetSource = entity_source(*peer);
+            invalidate_entity_identity_locked(resetSource);
+        }
         // The channel outlives the session. A leave names one region, and the client keeps playing
         // the other over the same channel.
         for (std::uint64_t& slot : peer->sessions) {
@@ -521,6 +637,7 @@ void drop(std::uint64_t sessionId) noexcept {
             }
         }
         if (peer->externalGroupSessionId == sessionId) {
+            resetSource = entity_source(*peer);
             displacedCount = collect_displaced_locked(*peer, displaced);
             peer->externalGroupSessionId = 0;
             peer->activityBinding = {};
@@ -532,15 +649,20 @@ void drop(std::uint64_t sessionId) noexcept {
     ReleaseSRWLockExclusive(&g_lock);
     notify_external_outcomes(displaced, displacedCount);
     reset_transports(sessionId);
+    reset_entity_source(resetSource);
 }
 
 /** Drops every link at one endpoint, which is what a connect-closed names. */
 void drop_endpoint(const gp::Endpoint& endpoint) noexcept {
     std::array<std::uint64_t, gp::kAssociationCapacity * gp::kSessionsPerLink> sessions{};
     std::size_t sessionCount = 0;
+    std::array<gp::entity_identity::Source, gp::kAssociationCapacity> sources{};
+    std::size_t sourceCount = 0;
     AcquireSRWLockExclusive(&g_lock);
     for (gp::PeerLink& peer : g_peers) {
         if (peer.stage != gp::PeerStage::absent && peer.endpoint == endpoint) {
+            sources[sourceCount++] = entity_source(peer);
+            invalidate_entity_identity_locked(sources[sourceCount - 1]);
             for (const std::uint64_t sessionId : peer.sessions) {
                 if (sessionId != 0) {
                     sessions[sessionCount++] = sessionId;
@@ -551,14 +673,20 @@ void drop_endpoint(const gp::Endpoint& endpoint) noexcept {
     }
     ReleaseSRWLockExclusive(&g_lock);
     reset_transports(sessions.data(), sessionCount);
+    for (std::size_t index = 0; index < sourceCount; ++index)
+        reset_entity_source(sources[index]);
 }
 
 /** Drops every peer. */
 void reset() noexcept {
     std::array<std::uint64_t, gp::kAssociationCapacity * gp::kSessionsPerLink> sessions{};
     std::size_t sessionCount = 0;
+    std::array<gp::entity_identity::Source, gp::kAssociationCapacity> sources{};
+    std::size_t sourceCount = 0;
     AcquireSRWLockExclusive(&g_lock);
     for (gp::PeerLink& peer : g_peers) {
+        sources[sourceCount++] = entity_source(peer);
+        invalidate_entity_identity_locked(sources[sourceCount - 1]);
         for (const std::uint64_t sessionId : peer.sessions) {
             if (sessionId != 0) {
                 sessions[sessionCount++] = sessionId;
@@ -568,6 +696,8 @@ void reset() noexcept {
     }
     ReleaseSRWLockExclusive(&g_lock);
     reset_transports(sessions.data(), sessionCount);
+    for (std::size_t index = 0; index < sourceCount; ++index)
+        reset_entity_source(sources[index]);
 }
 
 } // namespace sunrise::server::gameplay::peer

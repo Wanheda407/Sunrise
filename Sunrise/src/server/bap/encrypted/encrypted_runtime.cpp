@@ -2,15 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdio>
 
 #include "../../../core/logging/log.h"
 #include "../../../middleware/datagen/definitions.h"
 #include "../../../middleware/encoding/byte_order.h"
 #include "../../../middleware/secure_channel/runtime.h"
+#include "../../../state/activity/bubble_authority/runtime.h"
 #include "../../../state/runtime/runtime.h"
 #include "../../../client/hooks/network/investment/investment_derived_rebuild.h"
 #include "../../activity/host_runtime.h"
+#include "../../gameplay/peer/peer_transport.h"
+#include "../../gameplay/squad_entity_retirement.h"
 #include "../activity_authority_query_owner.h"
 #include "../activity_authority_reset_owner.h"
 #include "../internal.h"
@@ -194,6 +198,24 @@ void submit_committed_authority_answer(Session& session,
                              {line.data(), static_cast<std::size_t>(count)});
         }
     }
+}
+
+/** An old ActivityClient cannot relinquish the replacement client's grant. */
+void submit_committed_authority_abdication(Session& session,
+                                           const activity_message::ActivityPlan& plan) noexcept {
+    if (plan.mutationDomain != activity_message::MutationDomain::authorityAbdication
+        || !plan.authorityAbdication.pending
+        || plan.authorityAbdication.sourceGeneration != session.activity.bindingGeneration
+        || plan.sessionId != session.activity.session.sessionId) {
+        return;
+    }
+    state::activity::bubble_authority::record_abdication(
+        plan.sessionId, plan.authorityAbdication.bubble, &plan.authorityAbdication.entities);
+    server::gameplay::squad_entity_retirement::observe_abdication(
+        session.activity.session,
+        session.activity.bindingGeneration,
+        plan.authorityAbdication.bubble,
+        plan.authorityAbdication.entities);
 }
 
 /** Applies one reset acknowledgement only after its authenticated service frame commits. */
@@ -390,6 +412,9 @@ bool consume(Session& session,
             // The transaction still commits. A push that cannot be built is one lost message, and
             // dropping the commit with it would strand the client's reported state for the session.
             diagnostics::report_failure(frame.serviceId, "notify");
+            if (activityPlan->mutationDomain == activity_message::MutationDomain::authorityPurge) {
+                handled = false;
+            }
         }
     }
     const bool artifactPurchase = transaction_if<ArtifactPurchaseTransaction>(outcome) != nullptr;
@@ -422,9 +447,14 @@ bool consume(Session& session,
     if (handled && processesBody) {
         // State changes become visible only after every requested frame and caller byte fit.
         // A refused commit sends nothing, so the frame's own reason is the only record of why.
-        const bool fits = framedSize <= response.size();
         const char* commitReason = "none";
-        handled = fits && transactions::commit(outcome, publication, commitReason);
+        server::gameplay::entity_identities::PublicationLease entityLease;
+        const bool retirementValid =
+            push::activity::begin_staged_roster_publication(session, entityLease);
+        const bool fits = framedSize <= response.size();
+        if (!retirementValid) commitReason = "entity_retirement_stale";
+        handled =
+            fits && retirementValid && transactions::commit(outcome, publication, commitReason);
         if (!handled) {
             diagnostics::report_failure(
                 frame.serviceId, "commit", fits ? commitReason : "frame_capacity");
@@ -432,6 +462,7 @@ bool consume(Session& session,
         if (handled) {
             std::copy_n(scratch.framed.begin(), framedSize, response.begin());
             written = framedSize;
+            entityLease.release();
             // The caller copy finishes before connection fields are published.
             session.sendNonce = nextSendNonce;
             if (publishesQueuez) {
@@ -463,6 +494,54 @@ bool consume(Session& session,
                 submit_committed_entity_slots_requested(*activityPlan);
                 submit_committed_authority_reset(session, *activityPlan);
                 submit_committed_authority_answer(session, *activityPlan);
+                submit_committed_authority_abdication(session, *activityPlan);
+                if (activityPlan->hasReturnedEntitySlots
+                    && activityPlan->sessionId == session.activity.session.sessionId) {
+                    server::gameplay::squad_entity_retirement::returned_slots(
+                        session.activity.session,
+                        session.activity.bindingGeneration,
+                        activityPlan->returnedEntitySlots);
+                }
+                if (activityPlan->mutationDomain
+                    == activity_message::MutationDomain::authorityPurge) {
+                    const auto previousEpoch = session.activity.replicationEpoch;
+                    session.activity.replicationEpoch = activityPlan->authorityPurge.body.epoch;
+                    const auto updatedViews = server::gameplay::peer::commit_replication_epoch(
+                        session.activity.session,
+                        session.activity.bindingGeneration,
+                        previousEpoch,
+                        session.activity.replicationEpoch);
+                    state::activity::bubble_authority::record_purge(
+                        activityPlan->sessionId, activityPlan->authorityPurge.body.slots);
+                    server::gameplay::squad_entity_retirement::returned_slots(
+                        session.activity.session,
+                        session.activity.bindingGeneration,
+                        activityPlan->authorityPurge.body.slots);
+                    if (session.activityReplicationEpoch.pending
+                        && session.activityReplicationEpoch.generation
+                               == session.activity.replicationEpoch) {
+                        session.activityReplicationEpoch.pending = false;
+                    }
+                    unsigned slots = 0;
+                    for (const std::byte byte : activityPlan->authorityPurge.body.slots) {
+                        slots +=
+                            static_cast<unsigned>(std::popcount(std::to_integer<unsigned>(byte)));
+                    }
+                    std::array<char, core::log::kLineCapacity> line{};
+                    const int count =
+                        std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=activity stage=purge result=published epoch=%u reason=%d "
+                                      "slots=%u views=%zu",
+                                      static_cast<unsigned>(session.activity.replicationEpoch),
+                                      static_cast<int>(activityPlan->authorityPurge.body.reason),
+                                      slots,
+                                      updatedViews);
+                    if (count > 0)
+                        core::log::write(core::log::Channel::server,
+                                         core::log::Level::debug,
+                                         {line.data(), static_cast<std::size_t>(count)});
+                }
             }
             // Any delivered activity notification resets the client's silence timer, so the
             // fallback keepalive is delayed. A roster-only answer is excluded: it owes neither the

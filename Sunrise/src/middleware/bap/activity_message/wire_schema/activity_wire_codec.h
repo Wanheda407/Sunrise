@@ -41,6 +41,8 @@ struct FieldView final {
     std::uint8_t typeCode{};
     std::uint8_t presence{};
     std::uint8_t parameter2{};
+    std::uint32_t bitmapOffset{};
+    bool hasBitmapOffset{};
 };
 
 } // namespace runtime
@@ -93,6 +95,29 @@ enum class ValueRole : std::uint8_t {
     referenceValueTagB,
     referenceValueCompact,
     referenceValueIndex,
+    positionCompressed,
+    positionCodeX,
+    positionCodeY,
+    positionCodeZ,
+    positionPoint,
+    positionDirection,
+    opaqueScalarCode,
+    vectorUniform,
+    vectorUniformInteger,
+    vectorCodeX,
+    vectorCodeY,
+    vectorCodeZ,
+    vectorCodeW,
+    rotationAxisShortcut,
+    rotationAxisCode,
+    rotationAngleCode,
+};
+
+/** Position widths belong to the selected cell, independently of the reflection codec family. */
+struct PositionProfile final {
+    std::array<std::uint8_t, 3> axisBits{};
+    bool selectorPresent{};
+    bool hasWidths{};
 };
 
 using FindRuntimeSchema = bool (*)(const void*, std::uint32_t, runtime::SchemaView&) noexcept;
@@ -111,6 +136,11 @@ struct RuntimeSchemaResolver final {
     ResolveCommandPayload resolveCommandPayload{};
     ValidateRuntimeType validateType{};
     IsZeroBitRuntimeType isZeroBitType{};
+    const PositionProfile* positionProfile{};
+    bool (*recordPresence)(const void*, std::uint32_t, bool) noexcept {};
+    std::uint32_t firstFieldBit{};
+    std::uint8_t (*canonicalType)(const void*, std::uint8_t) noexcept {};
+    bool nativeCommandEmptyShortcut{};
 };
 
 /** Why one codec run stopped: complete, or the exact input it still needs. */

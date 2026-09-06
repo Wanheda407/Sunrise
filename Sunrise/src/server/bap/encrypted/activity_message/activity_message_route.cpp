@@ -128,6 +128,7 @@ struct SenseResolverContext final {
     return sense_update::TargetStatus::resolved;
 }
 
+/** A Sense slot must resolve within the exact published object group. */
 [[nodiscard]] sense_update::TargetStatus
 resolve_sense_slot(const void* raw,
                    const sense_update::GroupTarget& group,
@@ -522,6 +523,8 @@ void report_message(std::uint32_t messageType,
             request.sessionId, returned, plan.entitySlotMutation)) {
         return false;
     }
+    plan.returnedEntitySlots = decoded;
+    plan.hasReturnedEntitySlots = true;
     plan.sessionId = request.sessionId;
     plan.delivery = Delivery::none;
     plan.mutationDomain = MutationDomain::entitySlots;
@@ -758,6 +761,55 @@ constexpr std::array<FramingRoute, 19> kFramingRoutes{{
     return true;
 }
 
+/** A purge answer preserves the requesting client's complete mask and reason. */
+[[nodiscard]] bool prepare_authority_purge(const ActivityClientBinding& binding,
+                                           const RosterDecodeMap& rosterDecode,
+                                           IngressAdapter adapter,
+                                           const service::Request& request,
+                                           ActivityPlan& plan,
+                                           bool& hasTransaction) noexcept {
+    service::entity_authority::PurgeRequest purge{};
+    const bool parsed = service::entity_authority::parse_request_purge(request.payload, purge);
+    if (!frame_only(binding, rosterDecode, adapter, request)) return false;
+    if (!parsed) return true;
+    plan.sessionId = request.sessionId;
+    plan.authorityPurge.body.slots = purge.mask;
+    plan.authorityPurge.body.reason = static_cast<std::int8_t>(purge.reason);
+    plan.authorityPurge.body.epoch = static_cast<std::uint8_t>(binding.replicationEpoch + 1U);
+    plan.authorityPurge.sourceGeneration = binding.bindingGeneration;
+    plan.authorityPurge.pending = true;
+    plan.delivery = Delivery::purgeNotification;
+    plan.mutationDomain = MutationDomain::authorityPurge;
+    hasTransaction = true;
+    return true;
+}
+
+/** A valid abdication changes ownership only after its frame commits. */
+[[nodiscard]] bool prepare_authority_abdication(const ActivityClientBinding& binding,
+                                                const RosterDecodeMap& rosterDecode,
+                                                IngressAdapter adapter,
+                                                const service::Request& request,
+                                                ActivityPlan& plan,
+                                                bool& hasTransaction) noexcept {
+    service::entity_authority::Release release{};
+    const bool parsed = service::entity_authority::parse_abdicate(request.payload, release);
+    if (!frame_only(binding, rosterDecode, adapter, request)) {
+        return false;
+    }
+    if (!parsed) {
+        return true;
+    }
+    plan.sessionId = request.sessionId;
+    plan.authorityAbdication.sourceGeneration = binding.bindingGeneration;
+    plan.authorityAbdication.entities = release.mask;
+    plan.authorityAbdication.bubble = release.selector;
+    plan.authorityAbdication.pending = true;
+    plan.delivery = Delivery::none;
+    plan.mutationDomain = MutationDomain::authorityAbdication;
+    hasTransaction = true;
+    return true;
+}
+
 /** Retains one exact msg-29 acknowledgement until its authenticated frame commits. */
 [[nodiscard]] bool prepare_authority_reset_acknowledgement(const ActivityClientBinding& binding,
                                                            const RosterDecodeMap& rosterDecode,
@@ -865,6 +917,12 @@ bool process(const ActivityClientBinding& binding,
         break;
     case IngressAdapter::authorityResetAcknowledgement:
         return prepare_authority_reset_acknowledgement(
+            binding, rosterDecode, adapter, request, plan, hasTransaction);
+    case IngressAdapter::authorityAbdicate:
+        return prepare_authority_abdication(
+            binding, rosterDecode, adapter, request, plan, hasTransaction);
+    case IngressAdapter::authorityRequestPurge:
+        return prepare_authority_purge(
             binding, rosterDecode, adapter, request, plan, hasTransaction);
     case IngressAdapter::authorityQueryAnswer:
         return prepare_authority_query_answer(

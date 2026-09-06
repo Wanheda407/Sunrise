@@ -113,6 +113,7 @@ struct TypedIntent final {
     std::uint16_t authBitCount{};
     std::uint16_t slotIndex{};
     std::uint8_t squadMode{};
+    bool squadRetireOnReturn{};
     std::uint8_t squadCount{};
     std::uint8_t deviceChannel{};
     std::uint8_t slotType{};

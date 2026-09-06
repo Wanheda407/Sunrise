@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "../../../../middleware/bap/activity_message/activity_host_control.h"
 #include "../../../../middleware/bap/activity_message/activity_patch_epoch_parser.h"
 #include "../../../../middleware/bap/activity_message/entity_authority.h"
 #include "../../../../state/activity/membership/activity_membership_query.h"
@@ -30,6 +31,7 @@ enum class Delivery : std::uint8_t {
     authoritativeNotifications,
     /** The roster, answering the patch epoch its body has to echo back. */
     rosterNotification,
+    purgeNotification,
 };
 
 /** State transaction family staged by one activity service request. */
@@ -43,6 +45,8 @@ enum class MutationDomain : std::uint8_t {
     authorityQuery,
     /** Reset acknowledgements are retained only by their exact connection generation. */
     authorityReset,
+    authorityAbdication,
+    authorityPurge,
 };
 
 /** Connection binding change staged by an activity join. */
@@ -94,17 +98,36 @@ struct AuthorityResetIngress final {
     bool pending{};
 };
 
+/** The client relinquishes one bubble's authority on message 33. */
+struct AuthorityAbdicationIngress final {
+    middleware::bap::activity_message::entity_slots::EntitySlotMask entities{};
+    std::uint64_t sourceGeneration{};
+    std::uint8_t bubble{};
+    bool pending{};
+};
+
+/** A purge request retains its exact mask and the next shared replication epoch. */
+struct AuthorityPurgeIngress final {
+    middleware::bap::activity_message::host_control::PurgeAuthorityBody body{};
+    std::uint64_t sourceGeneration{};
+    bool pending{};
+};
+
 /** Scalar and mask data kept after the sensitive svc8 payload view expires. */
 struct ActivityPlan final {
     std::uint32_t correlation{};
     std::uint64_t sessionId{};
     state::activity::entity_slots::PendingMutation entitySlotMutation{};
+    state::activity::bubble_authority::EntitySlotMask returnedEntitySlots{};
+    bool hasReturnedEntitySlots{};
     state::activity::membership::PendingMutation membershipMutation{};
     JoinIngressDiagnostic joinIngress{};
     ClientStateIngress clientState{};
     EntitySlotsRequestedIngress entitySlotsRequested{};
     AuthorityQueryIngress authorityQuery{};
     AuthorityResetIngress authorityReset{};
+    AuthorityAbdicationIngress authorityAbdication{};
+    AuthorityPurgeIngress authorityPurge{};
     middleware::bap::activity_message::patch_epoch::PatchEpoch patchEpoch{};
     /** Exact target generation whose destination the staged msg1 must encode. */
     state::activity::SessionBinding targetBinding{};

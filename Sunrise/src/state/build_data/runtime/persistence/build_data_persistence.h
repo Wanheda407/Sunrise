@@ -90,6 +90,9 @@ struct Context {
     std::vector<vendors::Definition> vendorDefinitionScratch{};
     std::vector<vendors::SaleRow> vendorSaleRowScratch{};
     std::vector<vendors::InstalledRow> vendorInstalledRowScratch{};
+    std::vector<gameplay::entity_position_profiles::Row> positionProfileScratch{};
+    std::vector<gameplay::entity_object_types::Row> objectTypeScratch{};
+    gameplay::entity_position_profiles::Fingerprint positionFingerprint{};
     cache::records::InvestmentConstants constantsScratch{};
     core::path::Buffer cacheDirectory;
     core::path::Buffer cachePath;

@@ -11,12 +11,15 @@
 #include <string_view>
 
 #include "../../../../../core/logging/log.h"
+#include "../../../../../middleware/bap/activity_message/activity_host_control.h"
 #include "../../../../../middleware/bap/activity_message/scriptable_auth_body.h"
 #include "../../../../../middleware/bap/activity_message/sensor_auth_update.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
 #include "../../../../../state/activity/bubble_authority/runtime.h"
 #include "../../../../../state/activity/runtime.h"
 #include "../../../../activity/host_runtime.h"
+#include "../../../../gameplay/peer/peer_transport.h"
+#include "../../../../gameplay/squad_entity_retirement.h"
 #include "activity_notification_frame.h"
 #include "internal.h"
 
@@ -259,11 +262,13 @@ bool append_roster_notification(
     const middleware::bap::activity_message::patch_epoch::PatchEpoch* epoch,
     const EffectiveRegion* exactRegion,
     bool solicited,
-    const RefreshReport* refresh) noexcept {
+    const RefreshReport* refresh,
+    bool allowEntityRetirement) noexcept {
     if (written > response.size()) {
         return false;
     }
     const auto initialLeases = session.activityRosterGroupLeases;
+    const bool initialRosterOwedForEpoch = session.activityRosterOwedForEpoch;
     const std::uint8_t initialRosterSends = session.activityRosterSends;
     const std::uint8_t initialRosterState = session.activityRosterState;
     const std::uint8_t initialRegionEpoch = session.activityRosterRegionEpoch;
@@ -408,10 +413,14 @@ bool append_roster_notification(
     // checked as signed; an out-of-range value becomes negative and fails.
     const std::int32_t pendingRegion =
         state::activity::membership::reported_region(session.activity.session.sessionId);
+    const bool enteringBubble = session.activityRosterRegionBubble >= 0
+                                && session.activityRosterRegionBubble != initialRegionBubble;
     const std::int32_t grantRegion =
-        pendingRegion >= 0 ? pendingRegion : static_cast<std::int32_t>(snapshot.region);
+        enteringBubble
+            ? static_cast<std::int32_t>(snapshot.region)
+            : (pendingRegion >= 0 ? pendingRegion : static_cast<std::int32_t>(snapshot.region));
     if (state::activity::bubble_authority::select_grant(
-            session.activity.session.sessionId, grantRegion, grant)) {
+            session.activity.session.sessionId, grantRegion, grant, enteringBubble)) {
         snapshot.hasGrant = true;
         snapshot.grant.bubble = grant.bubble;
         snapshot.grant.token = grant.token;
@@ -419,6 +428,14 @@ bool append_roster_notification(
 
     const std::size_t initialWritten = written;
     auto initialNonce = nonce;
+    server::gameplay::squad_entity_retirement::RetirementPlan entityRetirement{};
+    const auto retirementPriorEpoch = session.activity.replicationEpoch;
+    const auto& epochRequest = session.activityReplicationEpoch;
+    const auto retirementBaseEpoch =
+        epochRequest.staged && epochRequest.bindingGeneration == session.activity.bindingGeneration
+            ? epochRequest.generation
+            : retirementPriorEpoch;
+    const auto retirementEpoch = static_cast<std::uint8_t>(retirementBaseEpoch + 1U);
     std::size_t messageSize = 0;
     RosterDecodeMap decodeMap{};
     const MissionSeedLease& stagedMissionSeed = session.activityMissionSeed;
@@ -465,6 +482,28 @@ bool append_roster_notification(
             session, snapshot, name, 0, kNoGrant, RosterOutcome::unchanged, bodyHash, forced);
         return false;
     }
+    if (encoded && snapshot.hasGrant && enteringBubble && allowEntityRetirement
+        && server::gameplay::squad_entity_retirement::prepare_retirement(
+            session.activity.session,
+            session.activity.bindingGeneration,
+            grant.bubble,
+            entityRetirement)) {
+        namespace control = middleware::bap::activity_message::host_control;
+        const control::PurgeAuthorityBody retirement{
+            .slots = entityRetirement.entities, .epoch = retirementEpoch, .reason = 0};
+        std::array<std::byte, control::kPurgeAuthorityByteCount> retirementBytes{};
+        std::size_t retirementSize{};
+        encoded = control::encode_purge_authority(retirement, retirementBytes, retirementSize)
+                  && append_notification_frame(scratch,
+                                               session.activity.session.sessionId,
+                                               control::kPurgeAuthorityMessageType,
+                                               std::span(retirementBytes).first(retirementSize),
+                                               key,
+                                               nonce,
+                                               response,
+                                               written);
+        if (encoded) middleware::secure_channel::advance_nonce(nonce);
+    }
     encoded = encoded
               && append_notification_frame(scratch,
                                            session.activity.session.sessionId,
@@ -488,9 +527,14 @@ bool append_roster_notification(
         // discarded, so they are held here and settled by `commit_staged_roster` or
         // `discard_staged_roster`.
         session.activityRosterStaged.grant = grant;
+        session.activityRosterStaged.entityRetirement = entityRetirement;
+        session.activityRosterStaged.retirementPriorEpoch = retirementPriorEpoch;
+        session.activityRosterStaged.retirementBaseEpoch = retirementBaseEpoch;
+        session.activityRosterStaged.retirementEpoch = retirementEpoch;
         session.activityRosterStaged.decodeMap = decodeMap;
         session.activityRosterStaged.bindingGeneration = session.activity.bindingGeneration;
         session.activityRosterStaged.priorLeases = initialLeases;
+        session.activityRosterStaged.priorRosterOwedForEpoch = initialRosterOwedForEpoch;
         session.activityRosterStaged.priorSends = initialRosterSends;
         session.activityRosterStaged.priorState = initialRosterState;
         session.activityRosterStaged.priorRegionEpoch = initialRegionEpoch;
@@ -567,6 +611,31 @@ bool append_roster_notification(
     return encoded;
 }
 
+bool validate_staged_roster(const Session& session) noexcept {
+    const auto& staged = session.activityRosterStaged;
+    return !staged.staged || !staged.entityRetirement.pending
+           || (staged.bindingGeneration == session.activity.bindingGeneration
+               && staged.retirementPriorEpoch == session.activity.replicationEpoch
+               && server::gameplay::squad_entity_retirement::validate_retirement(
+                   session.activity.session,
+                   session.activity.bindingGeneration,
+                   staged.entityRetirement));
+}
+
+/** Retained identities cannot change between final validation and the caller copy. */
+bool begin_staged_roster_publication(
+    const Session& session, server::gameplay::entity_identities::PublicationLease& lease) noexcept {
+    const auto& staged = session.activityRosterStaged;
+    return !staged.staged || !staged.entityRetirement.pending
+           || (staged.bindingGeneration == session.activity.bindingGeneration
+               && staged.retirementPriorEpoch == session.activity.replicationEpoch
+               && server::gameplay::squad_entity_retirement::begin_retirement_publication(
+                   session.activity.session,
+                   session.activity.bindingGeneration,
+                   staged.entityRetirement,
+                   lease));
+}
+
 /** Settles a staged roster body that reached the caller. */
 void commit_staged_roster(Session& session) noexcept {
     if (!session.activityRosterStaged.staged) {
@@ -582,6 +651,32 @@ void commit_staged_roster(Session& session) noexcept {
     // fixed map here exposes either the prior delivered roster or this complete delivered roster.
     session.activityRosterDecode = session.activityRosterStaged.decodeMap;
     if (session.activityRosterStaged.hasGrant) {
+        if (session.activityRosterStaged.entityRetirement.pending) {
+            server::gameplay::squad_entity_retirement::commit_retirement(
+                session.activityRosterStaged.entityRetirement);
+            const auto& staged = session.activityRosterStaged;
+            session.activity.replicationEpoch = staged.retirementEpoch;
+            if (staged.retirementBaseEpoch != staged.retirementPriorEpoch)
+                static_cast<void>(server::gameplay::peer::commit_replication_epoch(
+                    session.activity.session,
+                    session.activity.bindingGeneration,
+                    staged.retirementPriorEpoch,
+                    staged.retirementBaseEpoch));
+            static_cast<void>(
+                server::gameplay::peer::commit_replication_epoch(session.activity.session,
+                                                                 session.activity.bindingGeneration,
+                                                                 staged.retirementBaseEpoch,
+                                                                 staged.retirementEpoch));
+            state::activity::bubble_authority::record_purge(session.activity.session.sessionId,
+                                                            staged.entityRetirement.entities);
+            auto& request = session.activityReplicationEpoch;
+            if (request.bindingGeneration == session.activity.bindingGeneration
+                && (request.generation == staged.retirementBaseEpoch
+                    || request.generation == staged.retirementEpoch)) {
+                request.pending = false;
+                request.staged = false;
+            }
+        }
         state::activity::bubble_authority::record_grant(session.activity.session.sessionId,
                                                         session.activityRosterStaged.grant);
     }

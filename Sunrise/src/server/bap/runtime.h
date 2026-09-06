@@ -357,7 +357,8 @@ activity_authority_reset_snapshot(const state::activity::SessionBinding& binding
     std::int32_t expectedRegion,
     std::uint64_t expectedGeneration,
     const activity::host::ScriptableOutputReservation* reservation = nullptr,
-    std::array<std::int8_t, 4> authoredProfile = {}) noexcept;
+    std::array<std::int8_t, 4> authoredProfile = {},
+    state::gameplay::squad_entity_retirement::Eligibility squadRetirement = {}) noexcept;
 
 /** Cancels one exact typed override revision while excluding activity-link publication. */
 [[nodiscard]] bool

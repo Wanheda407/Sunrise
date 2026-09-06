@@ -161,7 +161,9 @@ template <typename Value, typename Less>
            && counts.vendorIndex <= domains.vendorIndex.size()
            && counts.vendorDefinitions <= domains.vendorDefinitions.size()
            && counts.vendorSaleRows <= domains.vendorSaleRows.size()
-           && counts.vendorInstalledRows <= domains.vendorInstalledRows.size();
+           && counts.vendorInstalledRows <= domains.vendorInstalledRows.size()
+           && counts.positionProfiles <= domains.positionProfiles.size()
+           && counts.objectTypes <= domains.objectTypes.size();
 }
 
 } // namespace
@@ -171,6 +173,14 @@ bool canonicalize(MutableDomains domains, const DomainCounts& counts) noexcept {
     if (!counts_fit(domains, counts)) {
         return false;
     }
+    const auto objectTypes = domains.objectTypes.first(counts.objectTypes);
+    std::sort(objectTypes.begin(), objectTypes.end(), [](const auto& a, const auto& b) {
+        return a.rsatTag < b.rsatTag;
+    });
+    const auto positions = domains.positionProfiles.first(counts.positionProfiles);
+    std::sort(positions.begin(), positions.end(), [](const auto& a, const auto& b) {
+        return a.activity < b.activity || (a.activity == b.activity && a.cell < b.cell);
+    });
     const auto named = domains.named.first(counts.named);
     const auto items = domains.items.first(counts.items);
     const auto collectibles = domains.collectibles.first(counts.collectibles);
@@ -207,7 +217,9 @@ bool canonicalize(MutableDomains domains, const DomainCounts& counts) noexcept {
 
 /** Checks the structure rules, the sort order, and every cross-domain item reference. */
 bool valid_domains(const BuildIdentity& build, Domains domains) noexcept {
-    if (domains.constants.extracted != 1U
+    if (!gameplay::entity_object_types::validate(domains.objectTypes)
+        || !gameplay::entity_position_profiles::validate(domains.positionProfiles)
+        || domains.constants.extracted != 1U
         || domains.constants.weaponPowerStatRow >= constants::kStatRowCount || domains.named.empty()
         || domains.items.empty() || domains.collectibles.empty()
         || domains.materialRequirementSets.empty() || domains.socketPlugRules.empty()

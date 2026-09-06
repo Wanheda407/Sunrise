@@ -57,6 +57,12 @@ read_domain(HANDLE file, std::span<Value> output, std::uint64_t& checksum) noexc
 
 /** Clears every output span so a failed read cannot expose partial records. */
 void clear(records::MutableDomains output) noexcept {
+    std::fill(output.positionProfiles.begin(),
+              output.positionProfiles.end(),
+              gameplay::entity_position_profiles::Row{});
+    if (output.positionFingerprint) *output.positionFingerprint = {};
+    std::fill(
+        output.objectTypes.begin(), output.objectTypes.end(), gameplay::entity_object_types::Row{});
     if (output.constants != nullptr) {
         *output.constants = {};
     }
@@ -139,17 +145,21 @@ bool expected_size(const records::DomainCounts& counts, std::uint64_t& size) noe
            && add_records(counts.vendorDefinitions, sizeof(records::VendorDefinitionRecord), size)
            && add_records(counts.vendorSaleRows, sizeof(records::VendorSaleRowRecord), size)
            && add_records(
-               counts.vendorInstalledRows, sizeof(records::VendorInstalledRowRecord), size);
+               counts.vendorInstalledRows, sizeof(records::VendorInstalledRowRecord), size)
+           && add_records(counts.positionProfiles, sizeof(records::PositionProfileRecord), size)
+           && add_records(counts.objectTypes, sizeof(records::ObjectTypeRecord), size);
 }
 
 /** Reads every payload array and checks the decoded domains as one transaction. */
 bool read_payload(HANDLE file,
                   const BuildIdentity& build,
                   const records::InvestmentConstants& constants,
+                  const gameplay::entity_position_profiles::Fingerprint& fingerprint,
                   const records::DomainCounts& counts,
                   records::MutableDomains output,
                   std::uint64_t& checksum) noexcept {
-    checksum = records::checksum_value(records::kChecksumOffsetBasis, constants);
+    checksum = records::checksum_value(
+        records::checksum_value(records::kChecksumOffsetBasis, constants), fingerprint);
     bool valid =
         read_domain<records::NamedRecord>(file, output.named.first(counts.named), checksum);
     valid =
@@ -233,6 +243,12 @@ bool read_payload(HANDLE file,
     valid = valid
             && read_domain<records::VendorInstalledRowRecord>(
                 file, output.vendorInstalledRows.first(counts.vendorInstalledRows), checksum);
+    valid = valid
+            && read_domain<records::PositionProfileRecord>(
+                file, output.positionProfiles.first(counts.positionProfiles), checksum);
+    valid = valid
+            && read_domain<records::ObjectTypeRecord>(
+                file, output.objectTypes.first(counts.objectTypes), checksum);
     if (!valid) {
         return false;
     }
@@ -268,6 +284,9 @@ bool read_payload(HANDLE file,
             output.vendorDefinitions.first(counts.vendorDefinitions),
             output.vendorSaleRows.first(counts.vendorSaleRows),
             output.vendorInstalledRows.first(counts.vendorInstalledRows),
+            output.positionProfiles.first(counts.positionProfiles),
+            fingerprint,
+            output.objectTypes.first(counts.objectTypes),
         });
 }
 

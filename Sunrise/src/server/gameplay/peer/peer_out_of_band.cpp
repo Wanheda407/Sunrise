@@ -103,6 +103,7 @@ void answer_connect(const gp::Endpoint& from,
     std::size_t displacedCount = 0;
     std::array<std::uint64_t, gp::kSessionsPerLink> resetSessions{};
     std::size_t resetSessionCount = 0;
+    gp::entity_identity::Source resetSource{};
 
     AcquireSRWLockExclusive(&g_lock);
     // Keyed by endpoint. The client holds one channel per host peer, so a second link would stamp
@@ -118,6 +119,8 @@ void answer_connect(const gp::Endpoint& from,
     }
     const bool fresh = peer != nullptr && (peer->stage == gp::PeerStage::absent || rebuilt);
     if (fresh) {
+        resetSource = entity_source(*peer);
+        invalidate_entity_identity_locked(resetSource);
         // The sessions outlive the channel. The client rebuilds one channel under every group
         // session it holds and rejoins none of them, so dropping them here strands each one.
         const std::array<std::uint64_t, gp::kSessionsPerLink> held =
@@ -165,6 +168,7 @@ void answer_connect(const gp::Endpoint& from,
     ReleaseSRWLockExclusive(&g_lock);
     notify_external_outcomes(displaced, displacedCount);
     reset_transports(resetSessions.data(), resetSessionCount);
+    reset_entity_source(resetSource);
     if (peer == nullptr) {
         report(core::log::Level::warn, "ev=gameplay stage=connect result=fail reason=capacity");
         return;

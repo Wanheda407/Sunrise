@@ -1,6 +1,10 @@
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdio>
+#include <memory>
+#include <new>
 
 #include "../../../middleware/encoding/bit_reader.h"
 #include "../../../middleware/encoding/bit_writer.h"
@@ -36,6 +40,133 @@ constexpr std::uint64_t kResendInterval = 250;
 /** Reflected root 0x80806AE6 after its lane-presence bit. */
 constexpr std::size_t kPlayerSnapshotBits = 1373;
 
+/** Capture at most eight unique failures within the endpoint's 1500-byte datagram bound. */
+constexpr std::size_t kRejectedPacketLimit = 8, kRejectedPacketCapacity = 1500;
+/** A 256-byte hex chunk leaves room for event fields in the 1024-byte log line. */
+constexpr std::size_t kRejectedHexChunk = 256;
+
+struct RejectedPacket final {
+    gp::entity_identity::Source source{};
+    std::array<std::byte, kRejectedPacketCapacity> bytes{};
+    std::size_t size{};
+};
+
+SRWLOCK g_rejectedPacketLock{SRWLOCK_INIT};
+std::array<RejectedPacket, kRejectedPacketLimit> g_rejectedPackets{};
+std::size_t g_rejectedPacketCount{};
+wire::EstablishedPacket g_rejectedPacketHeader{};
+
+/**
+ * Logs complete payload bytes in numbered chunks without truncating a packet.
+ * @param capture
+ * Process-local capture number.
+ * @param payload Complete decrypted datagram.
+ */
+void log_rejected_hex(std::size_t capture, std::span<const std::byte> payload) noexcept {
+    std::array<char, core::log::kLineCapacity> line{};
+    for (std::size_t offset = 0; offset < payload.size(); offset += kRejectedHexChunk) {
+        const auto count = (std::min)(kRejectedHexChunk, payload.size() - offset);
+        const int prefix = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=gameplay stage=rejected_packet_hex capture=%zu offset=%zu bytes=%zu hex=",
+            capture,
+            offset,
+            count);
+        if (prefix <= 0 || static_cast<std::size_t>(prefix) >= line.size()) return;
+        auto length = static_cast<std::size_t>(prefix);
+        if (!core::log::append_hex(line, length, payload.subspan(offset, count))) return;
+        core::log::write(
+            core::log::Channel::server, core::log::Level::debug, {line.data(), length});
+    }
+}
+
+/**
+ * Retains a bounded replay sample only while server debug logging is enabled.
+ * @param source
+ * Source already admitted for this decode.
+ * @param payload Complete decrypted datagram.
+ * @param
+ * externalOffset Start of the external handler in bits.
+ * @param laneOffset Start of the rejected
+ * entity lane in bits.
+ * @param stoppedOffset Reader position at failure in bits.
+ */
+void log_rejected_entity_packet(const gp::entity_identity::Source& source,
+                                std::span<const std::byte> payload,
+                                std::size_t externalOffset,
+                                std::size_t laneOffset,
+                                std::size_t stoppedOffset) noexcept {
+    if (!core::log::accepts(core::log::Channel::server, core::log::Level::debug) || payload.empty()
+        || payload.size() > kRejectedPacketCapacity)
+        return;
+    AcquireSRWLockExclusive(&g_rejectedPacketLock);
+    bool duplicate = false;
+    for (std::size_t index = 0; index < g_rejectedPacketCount; ++index) {
+        const auto& prior = g_rejectedPackets[index];
+        if (prior.source == source && prior.size == payload.size()
+            && std::equal(payload.begin(), payload.end(), prior.bytes.begin())) {
+            duplicate = true;
+            break;
+        }
+    }
+    if (duplicate || g_rejectedPacketCount == kRejectedPacketLimit) {
+        ReleaseSRWLockExclusive(&g_rejectedPacketLock);
+        return;
+    }
+    auto& saved = g_rejectedPackets[g_rejectedPacketCount];
+    saved.source = source;
+    saved.size = payload.size();
+    std::copy(payload.begin(), payload.end(), saved.bytes.begin());
+    const auto capture = ++g_rejectedPacketCount;
+    const bool headerValid = wire::decode_established(payload, true, g_rejectedPacketHeader);
+    const auto sequence = g_rejectedPacketHeader.ack.outboundHead;
+    const auto hasSequence = g_rejectedPacketHeader.ack.outboundHeadPresent;
+    const auto guard = g_rejectedPacketHeader.connectionSequenceLow2;
+    ReleaseSRWLockExclusive(&g_rejectedPacketLock);
+    report(core::log::Level::debug,
+           "ev=gameplay stage=rejected_packet capture=%zu reason=lane2 bytes=%zu "
+           "external_bit=%zu lane_bit=%zu stopped_bit=%zu header=%u sequence=%u has_sequence=%u "
+           "guard=%u",
+           capture,
+           payload.size(),
+           externalOffset,
+           laneOffset,
+           stoppedOffset,
+           headerValid ? 1U : 0U,
+           static_cast<unsigned>(sequence),
+           hasSequence ? 1U : 0U,
+           static_cast<unsigned>(guard));
+    report(core::log::Level::debug,
+           "ev=gameplay stage=rejected_packet_source capture=%zu activity=0x%llX revision=%llu "
+           "client_generation=%llu group=0x%llX peer=%llu channel=%llu view=%llu "
+           "address=0x%08X port=%u local_port=%u local_sequence=%u remote_sequence=%u",
+           capture,
+           static_cast<unsigned long long>(source.activitySessionId),
+           static_cast<unsigned long long>(source.activityRevision),
+           static_cast<unsigned long long>(source.activityClientGeneration),
+           static_cast<unsigned long long>(source.groupSessionId),
+           static_cast<unsigned long long>(source.peerGeneration),
+           static_cast<unsigned long long>(source.channelGeneration),
+           static_cast<unsigned long long>(source.viewGeneration),
+           source.address,
+           static_cast<unsigned>(source.port),
+           static_cast<unsigned>(source.localPort),
+           source.localConnectionSequence,
+           source.remoteConnectionSequence);
+    log_rejected_hex(capture, payload);
+}
+
+/** Packet ordinals share the receive ring's half-range ordering. */
+std::uint64_t packet_ordinal(const gp::PeerLink& peer, std::uint16_t sequence) noexcept {
+    if (!peer.ringInitialized) return gp::kPacketSequenceModulus + sequence;
+    const auto forward =
+        (sequence + gp::kPacketSequenceModulus - peer.receiveHead) % gp::kPacketSequenceModulus;
+    return forward < gp::kPacketSequenceHalf
+               ? peer.receiveOrdinal + forward
+               : peer.receiveOrdinal - (gp::kPacketSequenceModulus - forward);
+}
+
 /**
  * Records one received packet sequence in the acknowledgement history.
  * @param peer Peer receiving the packet.
@@ -43,6 +174,7 @@ constexpr std::size_t kPlayerSnapshotBits = 1373;
  */
 void record_sequence(gp::PeerLink& peer, std::uint16_t sequence) noexcept {
     if (!peer.ringInitialized) {
+        peer.receiveOrdinal = packet_ordinal(peer, sequence);
         peer.ringInitialized = true;
         peer.receiveHead = sequence;
         peer.received = {};
@@ -70,6 +202,7 @@ void record_sequence(gp::PeerLink& peer, std::uint16_t sequence) noexcept {
         shifted[index] = source < peer.received.size() && peer.received[source];
     }
     peer.received = shifted;
+    peer.receiveOrdinal += advance;
     peer.receiveHead = sequence;
 }
 
@@ -142,13 +275,16 @@ using middleware::gameplay::external::read_flag;
 [[nodiscard]] ExternalReadResult
 read_external(std::span<const std::byte> payload,
               std::size_t bitOffset,
-              std::uint64_t groupSessionId,
+              const gp::entity_identity::Source& source,
               const middleware::gameplay::external::Lane0Codec& lane0,
               const Lane0Transport& lane0Transport,
               const middleware::gameplay::external::TypePayloadCodec& entities,
               ParsedExternal& output) noexcept {
+    output.commonPresent = false;
     bits::Reader reader(payload);
-    ParsedExternal candidate{};
+    const std::unique_ptr<ParsedExternal> candidateStorage(new (std::nothrow) ParsedExternal{});
+    if (!candidateStorage) return ExternalReadResult::lane2;
+    ParsedExternal& candidate = *candidateStorage;
     bool lanePresent = false;
     bool externalPresent = false;
     if (!reader.skip(bitOffset) || !read_flag(reader, externalPresent) || !externalPresent) {
@@ -159,6 +295,8 @@ read_external(std::span<const std::byte> payload,
             && !middleware::gameplay::external::read_common_state(reader, candidate.common))) {
         return ExternalReadResult::common;
     }
+    output.commonPresent = candidate.commonPresent;
+    output.common = candidate.common;
     if (lane0Transport.write != nullptr) {
         if (!middleware::gameplay::external::read_simulation_event_lane(
                 reader, lane0Transport.payloadCodec, candidate.lane0)) {
@@ -177,11 +315,13 @@ read_external(std::span<const std::byte> payload,
             candidate.lane1)) {
         return ExternalReadResult::lane1;
     }
+    const auto lane2Offset = payload.size() * 8U - reader.remaining_bits();
     if (g_entityTransport.read != nullptr
-            ? !g_entityTransport.read(
-                  g_entityTransport.context, groupSessionId, reader, candidate.entities)
+            ? !g_entityTransport.read(g_entityTransport.context, source, reader, candidate.entities)
             : !middleware::gameplay::external::read_entity_batch(
                   reader, entities, candidate.entities)) {
+        log_rejected_entity_packet(
+            source, payload, bitOffset, lane2Offset, payload.size() * 8U - reader.remaining_bits());
         return ExternalReadResult::lane2;
     }
     if (!read_player_lane(reader)) {
@@ -317,7 +457,9 @@ void consume_established(const gp::Endpoint& from,
     bool externalExpected = false;
     bool externalValid = true;
     const char* externalFailure = "none";
-    ParsedExternal external{};
+    const std::unique_ptr<ParsedExternal> externalStorage(new (std::nothrow) ParsedExternal{});
+    if (!externalStorage) return;
+    ParsedExternal& external = *externalStorage;
     state::activity::SessionBinding commonBinding{};
     std::uint64_t commonOwnerGeneration = 0;
     std::uint8_t commonRequestedGeneration = 0;
@@ -327,95 +469,17 @@ void consume_established(const gp::Endpoint& from,
     DisplacedExternals completed{};
     std::size_t completedCount = 0;
     std::uint8_t expectedGuard = 0;
+    std::array<wire::AssembledMessage, kMessageReportCapacity> bodies{};
+    std::array<bool, kMessageReportCapacity> deferredView{};
+    gp::entity_identity::Source ingress{};
     AcquireSRWLockExclusive(&g_lock);
     gp::PeerLink* peer = find_locked(from);
-    std::array<wire::AssembledMessage, kMessageReportCapacity> bodies{};
     if (peer != nullptr) {
-        peerFound = true;
+        ingress = entity_source(*peer);
         expectedGuard = wire::connection_sequence_low2(peer->remoteConnectionSequence);
         guardAccepted = packet.connectionSequenceLow2 == expectedGuard;
-        const auto phase = peer->viewReceptor.phase();
-        externalExpected = phase == gp::external::view_receptor::Phase::provisional
-                           || phase == gp::external::view_receptor::Phase::accepted;
-        if (guardAccepted && externalExpected) {
-            externalGroupSessionId = peer->externalGroupSessionId;
-            const ExternalReadResult externalRead = read_external(payload,
-                                                                  packet.externalBitOffset,
-                                                                  externalGroupSessionId,
-                                                                  g_lane0Codec,
-                                                                  g_lane0Transport,
-                                                                  g_entityCodec,
-                                                                  external);
-            externalValid = externalRead == ExternalReadResult::accepted;
-            externalFailure = external_result_name(externalRead);
-            if (externalValid && external.commonPresent) {
-                commonCandidate = peer->commonReconciler;
-                const auto result = commonCandidate.observe(external.common);
-                externalValid =
-                    result == gp::external::common_reconciler::ObserveResult::initialAccepted
-                    || result
-                           == gp::external::common_reconciler::ObserveResult::
-                               awaitingRequestedGeneration
-                    || result == gp::external::common_reconciler::ObserveResult::ready;
-                if (!externalValid) {
-                    externalFailure = "reconcile";
-                }
-                commonRequest =
-                    result == gp::external::common_reconciler::ObserveResult::initialAccepted
-                    && commonCandidate.pending_request(commonRequestedGeneration);
-                if (commonRequest) {
-                    commonBinding = peer->activityBinding;
-                    commonOwnerGeneration = commonCandidate.owner_generation();
-                }
-                commonCandidatePresent = externalValid;
-            }
-            if (externalValid && externalGroupSessionId != 0 && external.entities.recordPresent) {
-                externalValid = g_entityTransport.accepted != nullptr
-                                    ? g_entityTransport.accepted(g_entityTransport.context,
-                                                                 externalGroupSessionId,
-                                                                 external.entities)
-                                    : g_entityAccepted == nullptr
-                                          || g_entityAccepted(g_entityAcceptedContext,
-                                                              externalGroupSessionId,
-                                                              external.entities);
-                if (!externalValid) {
-                    externalFailure = "lane2_accept";
-                }
-            }
-            if (externalValid && externalGroupSessionId != 0
-                && g_lane0Transport.accepted != nullptr) {
-                externalValid = g_lane0Transport.accepted(
-                    g_lane0Transport.context, externalGroupSessionId, external.lane0);
-                if (!externalValid) {
-                    externalFailure = "lane0_accept";
-                }
-            }
-            if (externalValid && commonCandidatePresent) {
-                peer->commonReconciler = commonCandidate;
-            }
-        }
     }
     if (guardAccepted) {
-        // Reliable queues drain even when a later external component rejects its body.
-        if (externalValid) {
-            for (auto& contribution : peer->externalContributions) {
-                if (!contribution.occupied) {
-                    continue;
-                }
-                const wire::AckOutcome outcome =
-                    wire::acknowledgement_outcome(packet.ack, contribution.packetSequence);
-                if (outcome == wire::AckOutcome::unresolved) {
-                    continue;
-                }
-                completed[completedCount++] = {
-                    contribution.groupSessionId, contribution.transmissionId, outcome};
-                if (outcome == wire::AckOutcome::received && contribution.commonPresent
-                    && contribution.viewGeneration == peer->viewGeneration) {
-                    peer->commonCommitted = true;
-                }
-                contribution = {};
-            }
-        }
         if (packet.ack.outboundHeadPresent) {
             record_sequence(*peer, packet.ack.outboundHead);
         }
@@ -447,30 +511,7 @@ void consume_established(const gp::Endpoint& from,
         stage = static_cast<unsigned>(peer->stage);
     }
     ReleaseSRWLockExclusive(&g_lock);
-    if (!peerFound) {
-        return;
-    }
-    if (!guardAccepted) {
-        report(core::log::Level::debug,
-               "ev=gameplay stage=packet result=drop reason=channel_low2 got=%u expect=%u",
-               static_cast<unsigned>(packet.connectionSequenceLow2),
-               static_cast<unsigned>(expectedGuard));
-        return;
-    }
-    if (!externalValid) {
-        report(core::log::Level::debug,
-               "ev=gameplay stage=external result=drop reason=%s group=0x%016llX",
-               externalFailure,
-               static_cast<unsigned long long>(externalGroupSessionId));
-    }
-    if (externalValid && commonRequest && externalGroupSessionId != 0) {
-        queue_common_request(from,
-                             externalGroupSessionId,
-                             commonBinding,
-                             commonOwnerGeneration,
-                             commonRequestedGeneration);
-    }
-    notify_external_outcomes(completed, completedCount);
+    // Reliable controls establish the view used by this packet's external payload.
     for (std::size_t index = 0; index < deliveredCount; ++index) {
         report(core::log::Level::info,
                "ev=gameplay stage=message result=ok id=%u peerstage=%u",
@@ -484,12 +525,194 @@ void consume_established(const gp::Endpoint& from,
         }
         // Group handling runs outside the lock because answering takes it again.
         bits::Reader reader({body.bytes.data(), gp::kReassemblyCapacity});
+        namespace viewWire = middleware::gameplay::group;
+        if (body.id == viewWire::kViewMessageId) {
+            auto stageReader = reader;
+            viewWire::ViewEstablishment transition{};
+            if (stageReader.skip(body.bodyBitOffset) && viewWire::read_view(stageReader, transition)
+                && transition.kind == 5) {
+                // Stage 5 may depend on common state carried later in this same packet.
+                deferredView[index] = true;
+                continue;
+            }
+        }
         if (reader.skip(body.bodyBitOffset) && !group::consume(from, body.id, reader, now)) {
             report(core::log::Level::debug,
                    "ev=gameplay stage=message result=undecoded id=%u",
                    static_cast<unsigned>(body.id));
         }
     }
+    AcquireSRWLockExclusive(&g_lock);
+    peer = find_locked(from);
+    const bool sameChannel = peer != nullptr && peer->peerGeneration == ingress.peerGeneration
+                             && peer->channelGeneration == ingress.channelGeneration
+                             && peer->localConnectionSequence == ingress.localConnectionSequence
+                             && peer->remoteConnectionSequence == ingress.remoteConnectionSequence;
+    guardAccepted = guardAccepted && sameChannel;
+
+    if (peer != nullptr) {
+        peerFound = true;
+        expectedGuard = wire::connection_sequence_low2(peer->remoteConnectionSequence);
+        guardAccepted =
+            guardAccepted && sameChannel && packet.connectionSequenceLow2 == expectedGuard;
+        externalExpected = peer->viewReceptor.accepts_inbound_entities();
+        if (guardAccepted && externalExpected) {
+            externalGroupSessionId = peer->externalGroupSessionId;
+            const auto source = entity_source(*peer);
+            const auto ordinal = packet_ordinal(*peer, packet.ack.outboundHead);
+            const ExternalReadResult externalRead = read_external(payload,
+                                                                  packet.externalBitOffset,
+                                                                  source,
+                                                                  g_lane0Codec,
+                                                                  g_lane0Transport,
+                                                                  g_entityCodec,
+                                                                  external);
+            externalValid = externalRead == ExternalReadResult::accepted;
+            externalFailure = external_result_name(externalRead);
+            if (external.commonPresent) {
+                commonCandidate = peer->commonReconciler;
+                const auto result = commonCandidate.observe(external.common);
+                const bool commonValid =
+                    result == gp::external::common_reconciler::ObserveResult::initialAccepted
+                    || result
+                           == gp::external::common_reconciler::ObserveResult::
+                               awaitingRequestedGeneration
+                    || result == gp::external::common_reconciler::ObserveResult::ready;
+                if (!commonValid) {
+                    externalValid = false;
+                    externalFailure = "reconcile";
+                }
+                commonRequest =
+                    result == gp::external::common_reconciler::ObserveResult::initialAccepted
+                    && commonCandidate.pending_request(commonRequestedGeneration);
+                if (commonRequest) {
+                    commonBinding = peer->activityBinding;
+                    commonOwnerGeneration = commonCandidate.owner_generation();
+                }
+                commonCandidatePresent = commonValid;
+                if (commonValid) {
+                    static_cast<void>(commonCandidate.qualify_entities(
+                        &external.common, ordinal, packet.ack.outboundHeadPresent));
+                    peer->commonReconciler = commonCandidate;
+                }
+            }
+            if (externalValid) {
+                if (!commonCandidatePresent) commonCandidate = peer->commonReconciler;
+                const bool currentEntityEpoch = commonCandidate.qualify_entities(
+                    external.commonPresent ? &external.common : nullptr,
+                    ordinal,
+                    packet.ack.outboundHeadPresent);
+                if (external.entities.recordPresent && !currentEntityEpoch) {
+                    externalValid = false;
+                    externalFailure = "entity_epoch";
+                } else {
+                    external.entities.hasAllocationEpoch = currentEntityEpoch;
+                    external.entities.allocationEpoch = commonCandidate.requested_generation();
+                    external.entities.allocationDomain = commonCandidate.allocation_domain();
+                    commonCandidatePresent = true;
+                }
+            }
+            middleware::gameplay::external::EntityBaselineMutation entityMutation{};
+            if (externalValid && external.entities.recordPresent
+                && g_entityTransport.prepare != nullptr) {
+                externalValid = g_entityTransport.commit != nullptr
+                                && g_entityTransport.prepare(g_entityTransport.context,
+                                                             source,
+                                                             external.entities,
+                                                             packet.ack.outboundHead,
+                                                             packet.ack.outboundHeadPresent,
+                                                             ordinal,
+                                                             entityMutation);
+                if (!externalValid) externalFailure = "lane2_prepare";
+            }
+            if (externalValid && externalGroupSessionId != 0
+                && g_lane0Transport.accepted != nullptr) {
+                externalValid = g_lane0Transport.accepted(
+                    g_lane0Transport.context, externalGroupSessionId, external.lane0);
+                if (!externalValid) {
+                    externalFailure = "lane0_accept";
+                }
+            }
+            // The peer lock keeps a prepared baseline stable until commit.
+            if (externalValid && externalGroupSessionId != 0 && external.entities.recordPresent) {
+                externalValid = g_entityTransport.commit != nullptr
+                                    ? g_entityTransport.commit(
+                                          g_entityTransport.context, source, entityMutation)
+                                    : g_entityAccepted == nullptr
+                                          || g_entityAccepted(g_entityAcceptedContext,
+                                                              externalGroupSessionId,
+                                                              external.entities);
+                if (!externalValid) externalFailure = "lane2_accept";
+            }
+            if (externalValid && commonCandidatePresent) {
+                peer->commonReconciler = commonCandidate;
+            }
+            if (externalValid && external.entities.recordPresent
+                && g_entityTransport.observed != nullptr) {
+                external.entities.ignoredRecordMask = entityMutation.ignoredRecordMask;
+                g_entityTransport.observed(g_entityTransport.context,
+                                           source,
+                                           external.entities,
+                                           packet.ack.outboundHead,
+                                           packet.ack.outboundHeadPresent,
+                                           ordinal,
+                                           now);
+            }
+        }
+    }
+    // Authenticated transport receipts remain valid when an inbound application lane is refused.
+    if (guardAccepted) {
+        for (auto& contribution : peer->externalContributions) {
+            if (!contribution.occupied) {
+                continue;
+            }
+            const wire::AckOutcome outcome =
+                wire::acknowledgement_outcome(packet.ack, contribution.packetSequence);
+            if (outcome == wire::AckOutcome::unresolved) {
+                continue;
+            }
+            completed[completedCount++] = {
+                contribution.groupSessionId, contribution.transmissionId, outcome};
+            if (outcome == wire::AckOutcome::received && contribution.commonPresent
+                && contribution.viewGeneration == peer->viewGeneration) {
+                peer->commonCommitted = true;
+            }
+            contribution = {};
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    if (!peerFound) {
+        return;
+    }
+    if (!guardAccepted) {
+        report(core::log::Level::debug,
+               "ev=gameplay stage=packet result=drop reason=%s got=%u expect=%u",
+               sameChannel ? "channel_low2" : "channel_changed",
+               static_cast<unsigned>(packet.connectionSequenceLow2),
+               static_cast<unsigned>(expectedGuard));
+        return;
+    }
+    if (!externalValid) {
+        report(core::log::Level::debug,
+               "ev=gameplay stage=external result=drop reason=%s group=0x%016llX",
+               externalFailure,
+               static_cast<unsigned long long>(externalGroupSessionId));
+    }
+    if (commonRequest && externalGroupSessionId != 0) {
+        queue_common_request(from,
+                             externalGroupSessionId,
+                             commonBinding,
+                             commonOwnerGeneration,
+                             commonRequestedGeneration);
+    }
+    for (std::size_t index = 0; index < deliveredCount; ++index) {
+        if (!deferredView[index]) continue;
+        const auto& body = bodies[index];
+        bits::Reader reader({body.bytes.data(), gp::kReassemblyCapacity});
+        if (reader.skip(body.bodyBitOffset))
+            static_cast<void>(group::consume(from, body.id, reader, now));
+    }
+    notify_external_outcomes(completed, completedCount);
     if (queueCleared) {
         report(core::log::Level::info,
                "ev=gameplay stage=sendqueue result=cleared packet=%u base=%u entries=%u",

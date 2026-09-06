@@ -9,6 +9,7 @@
 #include "activity_patch_epoch_parser.h"
 #include "definition.h"
 #include "squad_auth_body.h"
+#include "squad_sense_state.h"
 
 namespace sunrise::middleware::bap::activity_message::sensor_auth_update {
 
@@ -113,6 +114,18 @@ struct AuthOverride final {
     bool present{};
 };
 
+/** A full squad Sense baseline, including its delta root bit. */
+struct SenseOverride final {
+    std::array<std::byte, squad_sense::kMaximumByteCount> body{};
+    std::uint32_t objectTag{};
+    std::uint32_t key{};
+    std::uint32_t counter{};
+    std::size_t bitCount{};
+    std::size_t byteCount{};
+    std::uint16_t slotIndex{};
+    std::uint8_t slotType{};
+};
+
 /** Sub-blocks the delta's field 1 may carry. The wire array declares one element per bubble. */
 inline constexpr std::size_t kBubbleSubBlockCapacity = 64;
 /** Keys one sub-block may carry. Its wire key array declares 96. */
@@ -154,6 +167,7 @@ struct Snapshot final {
     Roster roster{};
     /** Exact typed bodies for slots already present in `roster`. */
     std::span<const AuthOverride> authOverrides{};
+    std::span<const SenseOverride> senseOverrides{};
     Grant grant{};
     /** Message 12's member record key. Zero leaves every type-13 block inert. */
     std::uint64_t playerKey{};

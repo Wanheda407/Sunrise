@@ -298,6 +298,12 @@ private:
             if (!writer_.write(value.unsignedValue, width)) {
                 return RuntimeWalkStatus::outputTooSmall;
             }
+            if (resolver_.nativeCommandEmptyShortcut && role == ValueRole::commandDefault
+                && value.unsignedValue != 0)
+                return RuntimeWalkStatus::complete;
+            if (resolver_.nativeCommandEmptyShortcut && role == ValueRole::commandTargetReference
+                && value.unsignedValue != 0)
+                return RuntimeWalkStatus::unsupportedField;
             if (role == ValueRole::commandSelector) {
                 selector = static_cast<std::uint8_t>(value.unsignedValue);
             }
@@ -364,10 +370,36 @@ private:
                    : RuntimeWalkStatus::outputTooSmall;
     }
 
-    /** Type 13 retains three raw IEEE-754 components in wire order. */
+    /** Type 13 replays the selected cell's quantized codes or raw float components. */
     [[nodiscard]] RuntimeWalkStatus write_vector3(const runtime::SchemaView& owner,
                                                   const runtime::FieldView& field,
                                                   std::uint32_t occurrence) noexcept {
+        const auto* profile = resolver_.positionProfile;
+        bool compressed = false;
+        if (profile != nullptr && profile->selectorPresent) {
+            RuntimeAuthoredValue value{};
+            if (!source_.take(owner, field, occurrence, ValueRole::positionCompressed, value)
+                || value.kind != ValueKind::unsignedInteger || value.unsignedValue > 1
+                || !writer_.write(value.unsignedValue, 1))
+                return RuntimeWalkStatus::missingValue;
+            compressed = value.unsignedValue != 0;
+        }
+        if (compressed) {
+            if (!profile->hasWidths) return RuntimeWalkStatus::unsupportedField;
+            constexpr std::array<ValueRole, 3> roles{
+                ValueRole::positionCodeX, ValueRole::positionCodeY, ValueRole::positionCodeZ};
+            for (std::size_t index = 0; index < roles.size(); ++index) {
+                const auto width = profile->axisBits[index];
+                if (width >= 32) return RuntimeWalkStatus::unsupportedField;
+                RuntimeAuthoredValue value{};
+                if (!source_.take(owner, field, occurrence, roles[index], value)
+                    || value.kind != ValueKind::unsignedInteger
+                    || value.unsignedValue >= (std::uint64_t{1} << width)
+                    || !writer_.write(value.unsignedValue, width))
+                    return RuntimeWalkStatus::missingValue;
+            }
+            return RuntimeWalkStatus::complete;
+        }
         for (const ValueRole role : {ValueRole::vectorX, ValueRole::vectorY, ValueRole::vectorZ}) {
             RuntimeAuthoredValue value{};
             if (!source_.take(owner, field, occurrence, role, value)
@@ -375,6 +407,43 @@ private:
                 || !writer_.write(std::bit_cast<std::uint32_t>(value.realValue), 32)) {
                 return RuntimeWalkStatus::missingValue;
             }
+        }
+        return RuntimeWalkStatus::complete;
+    }
+
+    /** Type 15 preserves the native point, direction, and explicit-W selectors. */
+    [[nodiscard]] RuntimeWalkStatus write_vector4(const runtime::SchemaView& owner,
+                                                  const runtime::FieldView& field,
+                                                  std::uint32_t occurrence) noexcept {
+        RuntimeAuthoredValue point{}, direction{};
+        if (!source_.take(owner, field, occurrence, ValueRole::positionPoint, point)
+            || point.kind != ValueKind::unsignedInteger || point.unsignedValue > 1
+            || !writer_.write(point.unsignedValue, 1))
+            return RuntimeWalkStatus::missingValue;
+        if (point.unsignedValue == 0) {
+            if (!source_.take(owner, field, occurrence, ValueRole::positionDirection, direction)
+                || direction.kind != ValueKind::unsignedInteger || direction.unsignedValue > 1
+                || !writer_.write(direction.unsignedValue, 1))
+                return RuntimeWalkStatus::missingValue;
+        }
+        if (direction.unsignedValue != 0) {
+            for (const auto role : {ValueRole::vectorX, ValueRole::vectorY, ValueRole::vectorZ}) {
+                RuntimeAuthoredValue value{};
+                if (!source_.take(owner, field, occurrence, role, value)
+                    || value.kind != ValueKind::real32
+                    || !writer_.write(std::bit_cast<std::uint32_t>(value.realValue), 32))
+                    return RuntimeWalkStatus::missingValue;
+            }
+        } else {
+            const auto status = write_vector3(owner, field, occurrence);
+            if (status != RuntimeWalkStatus::complete) return status;
+        }
+        if (point.unsignedValue == 0 && direction.unsignedValue == 0) {
+            RuntimeAuthoredValue value{};
+            if (!source_.take(owner, field, occurrence, ValueRole::vectorW, value)
+                || value.kind != ValueKind::real32
+                || !writer_.write(std::bit_cast<std::uint32_t>(value.realValue), 32))
+                return RuntimeWalkStatus::missingValue;
         }
         return RuntimeWalkStatus::complete;
     }
@@ -563,11 +632,90 @@ private:
         if (depth >= kMaximumRuntimeDepth || !step()) {
             return RuntimeWalkStatus::unsafeCount;
         }
+        if (resolver_.canonicalType != nullptr)
+            field.typeCode = resolver_.canonicalType(resolver_.context, field.typeCode);
         if (field.typeCode == 13) {
             return write_vector3(owner, field, occurrence);
         }
-        if (field.typeCode == 14) {
+        if (field.typeCode == 16) {
+            RuntimeAuthoredValue shortcut{}, axis{}, angle{};
+            if (!source_.take(owner, field, occurrence, ValueRole::rotationAxisShortcut, shortcut)
+                || !source_.take(owner, field, occurrence, ValueRole::rotationAxisCode, axis)
+                || !source_.take(owner, field, occurrence, ValueRole::rotationAngleCode, angle)
+                || shortcut.kind != ValueKind::unsignedInteger || shortcut.unsignedValue > 1
+                || axis.kind != ValueKind::unsignedInteger
+                || angle.kind != ValueKind::unsignedInteger || angle.unsignedValue > 127)
+                return RuntimeWalkStatus::missingValue;
+            const std::uint8_t axisWidth = shortcut.unsignedValue != 0 ? 1 : 19;
+            if (axis.unsignedValue > mask(axisWidth)) return RuntimeWalkStatus::missingValue;
+            return writer_.write(shortcut.unsignedValue, 1)
+                           && writer_.write(axis.unsignedValue, axisWidth)
+                           && writer_.write(angle.unsignedValue, 7)
+                       ? RuntimeWalkStatus::complete
+                       : RuntimeWalkStatus::outputTooSmall;
+        }
+        if (field.typeCode == 42) {
+            RuntimeAuthoredValue uniform{};
+            if (!source_.take(owner, field, occurrence, ValueRole::vectorUniform, uniform)
+                || uniform.kind != ValueKind::boolean || uniform.unsignedValue > 1
+                || !writer_.write(uniform.unsignedValue, 1))
+                return RuntimeWalkStatus::missingValue;
+            const bool quantized = field.parameter2 > 0 && field.parameter2 < 32;
+            unsigned width = quantized ? field.parameter2 : 32;
+            if (uniform.unsignedValue != 0 && quantized) {
+                RuntimeAuthoredValue integer{};
+                if (!source_.take(
+                        owner, field, occurrence, ValueRole::vectorUniformInteger, integer)
+                    || integer.kind != ValueKind::boolean || integer.unsignedValue > 1
+                    || !writer_.write(integer.unsignedValue, 1))
+                    return RuntimeWalkStatus::missingValue;
+                if (integer.unsignedValue != 0) {
+                    const float minimum =
+                        std::bit_cast<float>(static_cast<std::uint32_t>(field.biasOrDynamic));
+                    const float maximum =
+                        std::bit_cast<float>(static_cast<std::uint32_t>(field.widthOrCountOffset));
+                    const float range = maximum - minimum;
+                    if (!std::isfinite(range) || range < 0 || range >= 2147483648.0F)
+                        return RuntimeWalkStatus::unsupportedField;
+                    width = std::bit_width(static_cast<std::uint32_t>(range));
+                }
+            }
+            constexpr std::array roles{ValueRole::vectorCodeX,
+                                       ValueRole::vectorCodeY,
+                                       ValueRole::vectorCodeZ,
+                                       ValueRole::vectorCodeW};
+            for (unsigned index = 0; index < (uniform.unsignedValue != 0 ? 1U : 4U); ++index) {
+                RuntimeAuthoredValue code{};
+                if (!source_.take(owner, field, occurrence, roles[index], code)
+                    || code.kind != ValueKind::unsignedInteger
+                    || code.unsignedValue > mask(static_cast<std::uint8_t>(width)))
+                    return RuntimeWalkStatus::missingValue;
+                if (width != 0
+                    && !writer_.write(code.unsignedValue, static_cast<std::uint8_t>(width)))
+                    return RuntimeWalkStatus::outputTooSmall;
+            }
+            return RuntimeWalkStatus::complete;
+        }
+        if (field.typeCode == 44 || field.typeCode == 45) {
+            const auto width =
+                field.typeCode == 45
+                    ? (field.parameter2 > 0 && field.parameter2 < 32 ? field.parameter2 : 32)
+                    : field.widthOrCountOffset;
+            RuntimeAuthoredValue code{};
+            if (width <= 0 || width > 32
+                || !source_.take(owner, field, occurrence, ValueRole::opaqueScalarCode, code)
+                || code.kind != ValueKind::unsignedInteger
+                || code.unsignedValue > mask(static_cast<std::uint8_t>(width)))
+                return RuntimeWalkStatus::missingValue;
+            return writer_.write(code.unsignedValue, static_cast<std::uint8_t>(width))
+                       ? RuntimeWalkStatus::complete
+                       : RuntimeWalkStatus::outputTooSmall;
+        }
+        if (field.typeCode == 14 || field.typeCode == 40) {
             return write_compressed_vector(owner, field, occurrence);
+        }
+        if (field.typeCode == 15) {
+            return write_vector4(owner, field, occurrence);
         }
         if (field.typeCode == 18) {
             return write_entity_reference(owner, field, occurrence);
@@ -644,16 +792,21 @@ private:
         const bool command = field.typeCode == 36;
         const bool entityReference = field.typeCode == 18;
         const bool schemaReference = field.typeCode == 23;
-        const bool custom = field.typeCode == 13 || field.typeCode == 14 || field.typeCode == 22
-                            || field.typeCode == 19 || field.typeCode == 24 || field.typeCode == 25
-                            || field.typeCode == 26 || field.typeCode == 28 || field.typeCode == 43;
+        const bool custom = field.typeCode == 13 || field.typeCode == 14 || field.typeCode == 15
+                            || field.typeCode == 16 || field.typeCode == 22 || field.typeCode == 19
+                            || field.typeCode == 24 || field.typeCode == 25 || field.typeCode == 26
+                            || field.typeCode == 28 || field.typeCode == 40 || field.typeCode == 42
+                            || field.typeCode == 43 || field.typeCode == 44 || field.typeCode == 45;
         const bool zeroBit = resolver_.isZeroBitType != nullptr
                              && resolver_.isZeroBitType(resolver_.context, field.typeCode);
         // A selected field carries its schema handle on the wire, so it is structural but must
         // not also declare a nested schema row.
         const bool nestedSchemaKind =
             nested || command || entityReference || schemaReference || custom;
-        const bool structural = nestedSchemaKind || selected || zeroBit;
+        const bool unknownOptional = field.presence != 0 && !nestedSchemaKind && !selected
+                                     && !zeroBit && field.typeCode != 35
+                                     && storage_width(field.typeCode) == 0;
+        const bool structural = nestedSchemaKind || selected || zeroBit || unknownOptional;
         if (!nestedSchemaKind && field.nestedSchemaRow != runtime::kAbsentRuntimeRow) {
             return RuntimeWalkStatus::unsupportedField;
         }
@@ -687,6 +840,7 @@ private:
                     continue;
                 }
             }
+            if (unknownOptional) return RuntimeWalkStatus::unsupportedField;
             if (nested) {
                 const RuntimeWalkStatus status = walk_nested(owner, field, memory, depth);
                 if (status != RuntimeWalkStatus::complete) {
