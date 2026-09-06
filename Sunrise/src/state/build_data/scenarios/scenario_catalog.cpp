@@ -26,6 +26,8 @@ Table<RosterGroup, kRosterGroupCapacity> g_groups;
  */
 [[nodiscard]] bool canonical(const Definition& definition, std::size_t groupCount) noexcept {
     if (definition.nameLength == 0 || definition.nameLength > kNameCapacity
+        || definition.activityLabelLength > kActivityLabelCapacity
+        || definition.activityUseCount > kActivityUseCapacity
         || definition.bubbleCount > kBubbleCapacity || definition.truncated > 1
         || definition.rosterGroupCount > kDestinationGroupCapacity
         || definition.bubbleGroupCount > kDestinationBubbleGroupCapacity
@@ -65,6 +67,32 @@ Table<RosterGroup, kRosterGroupCapacity> g_groups;
     for (std::size_t index = definition.nameLength; index < kNameCapacity; ++index) {
         if (definition.name[index] != '\0') {
             return false;
+        }
+    }
+    for (std::size_t index = 0; index < kActivityLabelCapacity; ++index) {
+        const char value = definition.activityLabel[index];
+        if (index < definition.activityLabelLength ? (value < ' ' || value > '~') : value != '\0') {
+            return false;
+        }
+    }
+    for (std::size_t index = 0; index < kActivityUseCapacity; ++index) {
+        const ActivityUse& use = definition.activityUses[index];
+        if (index >= definition.activityUseCount) {
+            if (use != ActivityUse{}) {
+                return false;
+            }
+            continue;
+        }
+        if (use.typeHash == 0 || use.labelLength > use.label.size() || use.sources == 0
+            || (use.sources & ~kActivityUseSourceMask) != 0
+            || (index != 0 && use.typeHash <= definition.activityUses[index - 1].typeHash)) {
+            return false;
+        }
+        for (std::size_t byte = 0; byte < use.label.size(); ++byte) {
+            if (byte < use.labelLength ? (use.label[byte] < ' ' || use.label[byte] > '~')
+                                       : use.label[byte] != '\0') {
+                return false;
+            }
         }
     }
     for (std::size_t index = 0; index < kBubbleCapacity; ++index) {

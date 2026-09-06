@@ -149,12 +149,12 @@ bool build() noexcept {
         report(0, reason);
         return false;
     }
-    // The destination layouts and the spawn sets share this pass's directory, keys, and block
-    // storage. Both are independent of the item table, so a failure here leaves it alone.
+    // Destination metadata, spawn sets, and hash names share this pass's reader storage. Activity
+    // uses also read the investment root once located below; none depends on the item table.
     {
         const reader::Source packageSource{directory.chars.data(), &keys};
         (void)content::activity::entity_position_profiles::build(packageSource, storage.scratch);
-        (void)content::scenarios::build(packageSource, storage.scratch);
+        (void)content::scenarios::build(packageSource, storage.scratch, storage.root);
         (void)content::spawn_sets::build(packageSource, storage.scratch);
         (void)content::hash_names::build(packageSource, storage.scratch);
         (void)content::entity_names::build(packageSource, storage.scratch);

@@ -22,10 +22,15 @@ inline constexpr std::size_t kDefinitionCapacity = 64;
 
 /** One null-terminated row label. */
 using Label = std::array<char, kLabelCapacity>;
+/** One selected scenario's internal package name, kept separate from its display label. */
+using ActivityName = std::array<char, state::build_data::scenarios::kNameCapacity>;
 
 /** Rows the four pickers draw, rebuilt from the catalogues rather than stored in State. */
 struct Lists {
     std::array<Label, state::build_data::scenarios::kDefinitionCapacity> activities{};
+    std::array<ActivityName, state::build_data::scenarios::kDefinitionCapacity> activityNames{};
+    std::array<std::uint8_t, state::build_data::scenarios::kDefinitionCapacity>
+        activityNameLengths{};
     std::size_t activityCount{};
     /** Published destination count the activity rows were built from. */
     std::size_t activityRevision{};

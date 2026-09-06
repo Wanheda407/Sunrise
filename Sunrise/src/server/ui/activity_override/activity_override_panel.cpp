@@ -50,6 +50,24 @@ std::size_t g_spawnRow{kNoRow};
     return {value.packageName.data(), value.packageNameLength};
 }
 
+/** @return One picker row's internal package name. */
+[[nodiscard]] std::string_view row_name(const Lists& rows, std::size_t index) noexcept {
+    if (index >= rows.activityCount) {
+        return {};
+    }
+    return {rows.activityNames[index].data(), rows.activityNameLengths[index]};
+}
+
+/** Finds the picker row carrying one internal package name. */
+[[nodiscard]] std::size_t activity_row(const Lists& rows, std::string_view name) noexcept {
+    for (std::size_t index = 0; index < rows.activityCount; ++index) {
+        if (row_name(rows, index) == name) {
+            return index;
+        }
+    }
+    return kNoRow;
+}
+
 /**
  * Draws one labelled picker over a list of row labels.
  * @param id Stable Dear ImGui scope ID.
@@ -93,8 +111,13 @@ void follow_destination(const forced::ForcedDestination& value, Lists& rows) noe
 [[nodiscard]] bool draw_activity(forced::ForcedDestination& value, Lists& rows) noexcept {
     std::array<char, kLabelCapacity> preview{};
     const std::string_view name = name_of(value);
-    (void)std::snprintf(
-        preview.data(), preview.size(), "%.*s", static_cast<int>(name.size()), name.data());
+    g_activityRow = name.empty() ? kNoRow : activity_row(rows, name);
+    if (g_activityRow < rows.activityCount) {
+        preview = rows.activities[g_activityRow];
+    } else {
+        (void)std::snprintf(
+            preview.data(), preview.size(), "%.*s", static_cast<int>(name.size()), name.data());
+    }
     if (!row_picker("activity",
                     "Activity",
                     rows.activities.data(),
@@ -103,8 +126,7 @@ void follow_destination(const forced::ForcedDestination& value, Lists& rows) noe
                     g_activityRow)) {
         return false;
     }
-    const Label& picked = rows.activities[g_activityRow];
-    const std::string_view text(picked.data());
+    const std::string_view text = row_name(rows, g_activityRow);
     value.packageName = {};
     std::copy_n(
         text.begin(), (std::min)(text.size(), value.packageName.size()), value.packageName.begin());
@@ -149,6 +171,56 @@ void follow_destination(const forced::ForcedDestination& value, Lists& rows) noe
     value.activityIndex = rows.definitionIndices[g_definitionRow];
     value.hasActivityIndex = true;
     return true;
+}
+
+/** Shows the selected package's authored uses without claiming a particular ruleset is active. */
+void draw_activity_uses(const Lists& rows) noexcept {
+    if (rows.selected.nameLength == 0) {
+        return;
+    }
+    label::align();
+    if (rows.selected.activityUseCount == 0) {
+        ImGui::TextDisabled("Activity uses: unclassified");
+        return;
+    }
+    ImGui::TextDisabled("Activity uses");
+    // One bounded line per type preserves every use without truncating long playlist sets.
+    // Labels may repeat for distinct native hashes; the tooltip exposes identity and provenance.
+    const auto uses = std::span(rows.selected.activityUses).first(rows.selected.activityUseCount);
+    std::array<std::size_t, state::build_data::scenarios::kActivityUseCapacity> order{};
+    for (std::size_t index = 0; index < uses.size(); ++index) {
+        order[index] = index;
+    }
+    const auto sorted = std::span(order).first(uses.size());
+    std::sort(sorted.begin(), sorted.end(), [&uses](std::size_t left, std::size_t right) noexcept {
+        const auto& a = uses[left];
+        const auto& b = uses[right];
+        const std::string_view aLabel(a.label.data(), a.labelLength);
+        const std::string_view bLabel(b.label.data(), b.labelLength);
+        return aLabel != bLabel ? aLabel < bLabel : a.typeHash < b.typeHash;
+    });
+    if (ImGui::TreeNode("Known types")) {
+        for (const std::size_t index : sorted) {
+            const auto& use = uses[index];
+            if (use.labelLength == 0) {
+                ImGui::BulletText("Unnamed type 0x%08X", use.typeHash);
+            } else {
+                ImGui::BulletText("%.*s", static_cast<int>(use.labelLength), use.label.data());
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("Type hash: 0x%08X", use.typeHash);
+                using namespace state::build_data::scenarios;
+                ImGui::TextUnformatted(use.sources == kActivityUseSourceMask
+                                           ? "Direct activity and playlist references"
+                                       : use.sources == kDirectActivityUse
+                                           ? "Direct activity reference"
+                                           : "Playlist reference");
+                ImGui::EndTooltip();
+            }
+        }
+        ImGui::TreePop();
+    }
 }
 
 /**
@@ -320,6 +392,7 @@ void draw() noexcept {
 
     ImGui::Spacing();
     changed = draw_activity(value, rows) || changed;
+    draw_activity_uses(rows);
     ImGui::Spacing();
     changed = draw_definition(value, rows) || changed;
     ImGui::Spacing();

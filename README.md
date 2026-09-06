@@ -24,9 +24,10 @@ Destiny 2 Offline Exploration Mod
 - [ReGlitched/Sunrise](https://github.com/ReGlitched/Sunrise) (Entity Spawner)
 - [ItsReaver/Sunrise:feature/player-no-turnback-godmode](https://github.com/ltsReaver/Sunrise/tree/feature/player-no-turnback-godmode) (Godmode and Turnback avoidance)
 - [pr/54](https://github.com/stanuwu/Sunrise/pull/54) (Weapon Editor)
-- [pr/58](https://github.com/stanuwu/Sunrise/pull/58) (Automatic Enemy Spawns)
-- [pr/94](https://github.com/stanuwu/Sunrise/pull/94) (Fixes Bird Errors)
-- [pr/99](https://github.com/stanuwu/Sunrise/pull/99) (Fixes Weasel Error)
+- [pr/58](https://github.com/stanuwu/Sunrise/pull/58) (Automatic enemy spawns)
+- [pr/94](https://github.com/stanuwu/Sunrise/pull/94) (Fixes Bird errors)
+- [pr/95](https://github.com/stanuwu/Sunrise/pull/95) (Adds activity names to Activity Override)
+- [pr/99](https://github.com/stanuwu/Sunrise/pull/99) (Fixes Weasel error)
 - [pr/103](https://github.com/stanuwu/Sunrise/pull/103) (Fixes black screens)
 
 ## WIP
