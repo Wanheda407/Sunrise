@@ -27,6 +27,7 @@ Destiny 2 Offline Exploration Mod
 - [pr/58](https://github.com/stanuwu/Sunrise/pull/58) (Automatic Enemy Spawns)
 - [pr/94](https://github.com/stanuwu/Sunrise/pull/94) (Fixes Bird Errors)
 - [pr/99](https://github.com/stanuwu/Sunrise/pull/99) (Fixes Weasel Error)
+- [pr/103](https://github.com/stanuwu/Sunrise/pull/103) (Fixes black screens)
 
 ## WIP
 
