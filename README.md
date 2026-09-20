@@ -18,6 +18,13 @@ Destiny 2 Offline Preservation Mod
 - Exploration Features (Fly, Noclip, Activity Override, ...)
 - Persistent Save
 
+### Fork Features
+> This fork combines features of other forks and prs that are not in the main repo yet. Mostly for my own use but it includes the following:
+
+- [pr/94](https://github.com/stanuwu/Sunrise/pull/94) (Fixes Bird errors)
+- [pr/131](https://github.com/stanuwu/Sunrise/pull/131) (Bottomless Magazines)
+- [pr/134](https://github.com/stanuwu/Sunrise/pull/134) (Godmode)
+
 ## WIP
 
 This mod is a work in progress. Things might break or work in unexpected ways. There is also
@@ -54,7 +61,7 @@ To build from a command line, use the Developer PowerShell for VS 2026:
 
 1. Clone the repository
 ```powershell
-git clone https://github.com/stanuwu/Sunrise
+git clone https://github.com/Wanheda407/Sunrise
 cd Sunrise
 ```
 
@@ -69,7 +76,7 @@ Make sure you have `git`, `cmake`, `clang`, `ninja`, `llvm`, and `xwin` installe
 
 1. Clone the repository
 ```bash
-$ git clone https://github.com/stanuwu/Sunrise
+$ git clone https://github.com/Wanheda407/Sunrise
 $ cd Sunrise
 ```
 
@@ -191,8 +198,7 @@ AI was used in the creation of this project. If you are not comfortable with the
 programming projects beware.
 
 AI was NOT used to create any art or creative writing. Only for RE, development and documentation
-purposes. All AI work that is publicly released is reviewed by a human. AI is a tool and the user is
-responsible for the results it produces.
+purposes. All AI work that is publicly released is reviewed by a human. AI is a tool and the user is responsible for the results it produces.
 
 ## Affiliation Disclaimer
 
