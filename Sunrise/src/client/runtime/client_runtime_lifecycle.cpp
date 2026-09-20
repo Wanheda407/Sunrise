@@ -5,6 +5,7 @@
 #include "../content/activity/activity_sdk_generation_worker.h"
 #include "../content/activity/scriptable_catalog_worker.h"
 #include "../content/investment/worker.h"
+#include "../diagnostics/entity_create_probe.h"
 #include "../hooks/assert_handler/assert_handler_lifecycle.h"
 #include "../hooks/async_io/async_io_lifetime_guard.h"
 #include "../hooks/bootflow/bootflow_hook_lifecycle.h"
@@ -115,6 +116,7 @@ bool shutdown() noexcept {
     hooks::inactivity::uninstall();
     hooks::noclip::uninstall();
     hooks::teleport::uninstall();
+    diagnostics::uninstall_entity_create_probe();
     if (!hooks::config_getter::uninstall()) {
         ReleaseSRWLockExclusive(&runtime::g_lock);
         return false;
