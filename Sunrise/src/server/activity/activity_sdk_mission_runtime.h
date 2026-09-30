@@ -50,6 +50,8 @@ enum class SceneStatus : std::uint8_t {
     missionSeedUnavailable,
     missionSeedPending,
     outputBusy,
+    /** The cast has more squads than the eight dependencies the Auth schema carries. */
+    dependencyCapacity,
     refused,
 };
 
@@ -102,6 +104,11 @@ select_state(const state::activity_sdk::BoundView& view,
                                             std::uint32_t occurrenceRow,
                                             std::uint32_t slotRow,
                                             std::uint16_t cueIndex) noexcept;
+
+/** Checks one exact generated type-68 slot; the answer holds for every element it carries. */
+[[nodiscard]] SceneStatus directives_availability(const state::activity_sdk::BoundView& view,
+                                                  std::uint32_t occurrenceRow,
+                                                  std::uint32_t slotRow) noexcept;
 
 /** Checks one exact generated type-68 HUD directive element. */
 [[nodiscard]] SceneStatus directive_availability(const state::activity_sdk::BoundView& view,

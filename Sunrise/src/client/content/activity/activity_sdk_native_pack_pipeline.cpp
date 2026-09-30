@@ -138,8 +138,8 @@ void report(ProgressProbe probe, void* context, Phase phase) noexcept {
 
 /** Resolves one exact actor definition tag against the validated sorted actor section. */
 [[nodiscard]] bool
-resolve_actor(void* opaque, std::uint32_t definitionTag, std::uint32_t& output) noexcept {
-    output = format::kAbsentIndex;
+resolve_actor(void* opaque, std::uint32_t definitionTag, squads::ResolvedActor& output) noexcept {
+    output = {};
     if (opaque == nullptr) {
         return false;
     }
@@ -154,7 +154,8 @@ resolve_actor(void* opaque, std::uint32_t definitionTag, std::uint32_t& output) 
         || static_cast<std::size_t>(found - actors.begin()) >= format::kAbsentIndex) {
         return false;
     }
-    output = static_cast<std::uint32_t>(found - actors.begin());
+    output.actorClassIndex = static_cast<std::uint32_t>(found - actors.begin());
+    output.authoredSpawnProfile = found->authoredSpawnProfile;
     return true;
 }
 
@@ -212,7 +213,8 @@ lua_source(const state::activity_sdk::identity::Expected& identity,
             storage.actorSequenceBindings,
             worldSources,
             storage.combatObjectiveGroups,
-            storage.actorAbilities};
+            storage.actorAbilities,
+            storage.authoredSceneEventKeys};
 }
 
 } // namespace
@@ -370,6 +372,9 @@ Status stage(const wchar_t* sdkDirectory,
         if (!authored_scene::build(topology, sceneFacts, &read_tag, &packageContext, sceneRows)) {
             return cancelled(cancel, cancelContext) ? Status::cancelled
                                                     : Status::authoredSceneLinks;
+        }
+        if (!attach_unresourced_scenes(topology, sceneRows, topologyDetails)) {
+            return Status::authoredSceneLinks;
         }
         report(progress, progressContext, Phase::dialogueCues);
         if (!attach_dialogue_cue_counts(

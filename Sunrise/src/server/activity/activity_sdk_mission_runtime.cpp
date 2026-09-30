@@ -9,6 +9,7 @@
 #include "../../state/activity/runtime.h"
 #include "activity_sdk_behavior_scope.h"
 #include "activity_sdk_mission_internal.h"
+#include "activity_sdk_scene_spawn.h"
 #include "activity_sdk_scriptable_route.h"
 #include "host_runtime.h"
 
@@ -126,6 +127,9 @@ SceneStatus activate_authored_scene(const sdk::BoundView& view,
     if (status != SceneStatus::ready) {
         return status;
     }
+    if (prepared.omittedParticipants != 0) {
+        log_omitted_participants(*view.catalog, slotRow, prepared.omittedParticipants);
+    }
     if (server::bap::request_activity_state_local_authored_scene_override(
             view.binding,
             prepared.target,
@@ -172,6 +176,21 @@ SceneStatus play_dialogue_cue(const sdk::BoundView& view,
         return SceneStatus::queued;
     }
     return SceneStatus::refused;
+}
+
+/** Checks one exact type-68 slot; the answer holds for every element the slot carries. */
+SceneStatus directives_availability(const sdk::BoundView& view,
+                                    std::uint32_t occurrenceRow,
+                                    std::uint32_t slotRow) noexcept {
+    PreparedScene prepared{};
+    return prepare_typed_behavior(view,
+                                  occurrenceRow,
+                                  slotRow,
+                                  sdk::format::kDirectiveSlotType,
+                                  sdk::format::kDirectiveComponentClass,
+                                  sdk::format::kDirectiveAuthSchema,
+                                  false,
+                                  prepared);
 }
 
 SceneStatus directive_availability(const sdk::BoundView& view,
@@ -752,6 +771,9 @@ SceneStatus activate_authored_scene_reserved(const sdk::BoundView& view,
     if (status != SceneStatus::ready) {
         return status;
     }
+    if (prepared.omittedParticipants != 0) {
+        log_omitted_participants(*view.catalog, slotRow, prepared.omittedParticipants);
+    }
     if (server::bap::request_activity_state_local_authored_scene_override(
             view.binding,
             prepared.target,
@@ -847,6 +869,8 @@ const char* status_name(SceneStatus status) noexcept {
         return "mission_seed_pending";
     case SceneStatus::outputBusy:
         return "output_busy";
+    case SceneStatus::dependencyCapacity:
+        return "dependency_capacity";
     case SceneStatus::refused:
         return "refused";
     }
