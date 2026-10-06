@@ -82,13 +82,13 @@ $ cd Sunrise
 
 2. Download Windows headers:
 ```bash
-$ xwin --sdk-version 10.0.26100 --accept-license splat --include-debug-libs --output .xwin-cache
+xwin --sdk-version 10.0.26100 --accept-license splat --include-debug-libs --output .xwin-cache
 ```
 
 3. Configure and build the project
 ```bash
-$ cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=$(pwd)/linux-to-win-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
-$ cmake --build build
+cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=$(pwd)/linux-to-win-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
 ## Contributing
