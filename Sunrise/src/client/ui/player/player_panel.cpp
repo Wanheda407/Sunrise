@@ -4,6 +4,7 @@
 
 #include <imgui.h>
 
+#include "../../../core/settings/settings.h"
 #include "../../../core/ui/components/toggle/ui_toggle_component.h"
 #include "../../player/player_settings_store.h"
 
@@ -18,11 +19,15 @@ void draw() noexcept {
     ImGui::Separator();
     ImGui::TextWrapped("Keep weapon ammunition full.");
     ImGui::Spacing();
-    bool changed =
-        toggle::control("Infinite Reserves##infinite_ammo", settings.infiniteAmmoEnabled);
-    changed = toggle::control("Infinite Magazine##infinite_magazine",
-                              settings.infiniteMagazineEnabled)
-              || changed;
+    bool changed = false;
+    if (core::settings::get().client.cheats) {
+        changed = toggle::control("Enabled##infinite_ammo", settings.infiniteAmmoEnabled);
+        changed = toggle::control("Infinite Magazine##infinite_magazine", settings.infiniteMagazineEnabled) || changed;
+    } else {
+        ImGui::TextDisabled("Locked (cheats off)");
+        ImGui::SetItemTooltip("Set client.cheats to true in settings.json and restart. "
+                              "Progress is not saved while cheats are on.");
+    }
 
     ImGui::Spacing();
     ImGui::Spacing();
