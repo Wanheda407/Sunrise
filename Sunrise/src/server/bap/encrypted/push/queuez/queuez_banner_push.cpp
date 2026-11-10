@@ -80,7 +80,7 @@ bool append_banner_notification(Scratch& scratch,
     // The pair names the first character when none is picked yet. The client's family-zero record
     // accepts a snapshot for about ten seconds, then clears the family and refuses every later
     // one, so holding the pair for the pick spends that window and the subscription times out.
-    if (state::account::banner_character_soid(state::account_snapshot()) == 0) {
+    if (state::account::banner_character_soid(state::bound_account_snapshot()) == 0) {
         return false;
     }
     snapshot::Prepared prepared{};
@@ -101,7 +101,7 @@ bool append_banner_notification(Scratch& scratch,
     // The Client now holds this pair, so the ladder owns it. Without this an unsubscribe leaves
     // family zero unrecorded and the next pick has no previous record to release.
     const std::uint64_t delivered =
-        state::account::banner_character_soid(state::account_snapshot());
+        state::account::banner_character_soid(state::bound_account_snapshot());
     if (!after.family0Active && delivered != 0) {
         after.family0Active = true;
         after.family0Character = delivered;
@@ -229,7 +229,17 @@ bool append_equipment_roster_refresh_notification(
     return queuez_frame::append_prepared_frame(scratch, prepared, key, nonce, response, written);
 }
 
-/** Refreshes the selected character's complete Family-0 appearance from committed State. */
+/**
+ * Refreshes the selected character's complete Family-0 appearance from committed State.
+ * @param scratch Lock-owned transform buffers.
+ * @param before Queuez state visible to the current BAP peer.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce, advanced only by a complete frame.
+ * @param response Caller-owned output containing prior frames.
+ * @param written Existing byte count, updated by a complete frame.
+ * @param after Receives the queuez state the frame publishes, or `before` when none is owed.
+ * @return True when the frame is appended or none is owed: no family 0, or no pick yet.
+ */
 bool append_account_resync_appearance_notification(
     Scratch& scratch,
     const queuez::SessionState& before,
@@ -243,7 +253,7 @@ bool append_account_resync_appearance_notification(
     if (!before.family0Active) {
         return true;
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::bound_account_snapshot();
     const std::uint64_t selected = state::account::selected_character_soid(account);
     if (selected == 0) {
         // Before a pick no appearance record is owed, so nothing is appended.
@@ -273,7 +283,18 @@ bool append_account_resync_appearance_notification(
     return true;
 }
 
-/** Refreshes the selected character and includes its roster only when roster fields changed. */
+/**
+ * Refreshes the selected character and includes its roster only when roster fields changed.
+ * @param scratch Lock-owned transform buffers.
+ * @param before Queuez state visible to the current BAP peer.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce, advanced only by a complete frame.
+ * @param response Caller-owned output containing prior frames.
+ * @param written Existing byte count, updated by a complete frame.
+ * @param after Receives the queuez state the frame publishes, or `before` when none is owed.
+ * @param includeRoster True when the account roster object goes out with the record.
+ * @return True when the frame is appended or none is owed: no family 3, or no pick yet.
+ */
 bool append_account_resync_roster_notification(Scratch& scratch,
                                                const queuez::SessionState& before,
                                                std::span<const std::byte, state::kAesKeySize> key,
@@ -287,7 +308,7 @@ bool append_account_resync_roster_notification(Scratch& scratch,
     if (!before.family3Active) {
         return true;
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::bound_account_snapshot();
     const std::uint64_t selected = state::account::selected_character_soid(account);
     if (selected == 0) {
         // Before a pick no character record is owed, so nothing is appended.

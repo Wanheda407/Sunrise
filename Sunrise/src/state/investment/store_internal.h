@@ -10,14 +10,14 @@
 #include <string>
 #include <type_traits>
 
+#include "../account/account_context.h"
 #include "store.h"
 
 namespace sunrise::state::investment::store {
 
 /** True for a fixed-size byte array, the only shape this store binds as a BLOB. */
 template <typename T> inline constexpr bool kIsByteArray = false;
-template <std::size_t N>
-inline constexpr bool kIsByteArray<std::array<std::uint8_t, N>> = true;
+template <std::size_t N> inline constexpr bool kIsByteArray<std::array<std::uint8_t, N>> = true;
 
 extern sqlite3* g_database;
 extern std::recursive_mutex g_mutex;
@@ -28,8 +28,6 @@ struct Session {
     std::array<bool, kCharacterCapacity> selected{};
     std::array<std::uint16_t, kCharacterCapacity> activities{};
     std::uint64_t signInSeconds{};
-    /** Set while an earned-perk walk is owed; a rolled-back transaction restores it. */
-    bool perkWalkOwed{true};
 };
 extern Session g_session;
 
@@ -67,7 +65,7 @@ public:
 
     /** Reads one typed SQL scalar without narrowing an out-of-range value. */
     template <typename T> [[nodiscard]] bool column(int index, T& value) const noexcept {
-        if (statement_ == nullptr) {
+        if (!local_account_access() || statement_ == nullptr) {
             return false;
         }
         if constexpr (kIsByteArray<T>) {
@@ -131,8 +129,7 @@ private:
     /** SQL integers preserve all 64 identity bits; text bindings copy their input. */
     template <typename T> [[nodiscard]] bool bind(int index, const T& value) noexcept {
         if constexpr (kIsByteArray<T>) {
-            return sqlite3_bind_blob64(
-                       statement_, index, value.data(), value.size(), copy_text())
+            return sqlite3_bind_blob64(statement_, index, value.data(), value.size(), copy_text())
                    == SQLITE_OK;
         } else if constexpr (std::is_convertible_v<T, std::string_view>) {
             const std::string_view textValue(value);

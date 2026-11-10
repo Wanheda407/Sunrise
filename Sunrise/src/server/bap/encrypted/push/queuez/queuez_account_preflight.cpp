@@ -33,7 +33,21 @@ void report(core::log::Level level, const char* reason) noexcept {
 
 /** Canonicalizes the account before any family image is allowed to read it. */
 void ensure_account_canonical() noexcept {
+    if (state::bound_account() != state::kLocalAccount) {
+        return;
+    }
     if (g_settled.load(std::memory_order_acquire)) {
+        return;
+    }
+    // A row of uninstalled content fails every family image, so parking runs first.
+    switch (state::reconcile_installed_content()) {
+    case state::ParkingOutcome::ready:
+        break;
+    case state::ParkingOutcome::notReady:
+        report(core::log::Level::debug, "not_ready");
+        return;
+    case state::ParkingOutcome::failed:
+        report(core::log::Level::warn, "parking_failed");
         return;
     }
     switch (state::ensure_character_emote_collection()) {

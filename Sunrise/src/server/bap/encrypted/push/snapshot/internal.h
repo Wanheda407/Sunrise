@@ -14,6 +14,33 @@
 
 namespace sunrise::server::bap::encrypted::push::snapshot {
 
+/** Builds the family-seven join descriptor naming this account's directory key. */
+[[nodiscard]] bool prepare_join_descriptor(Scratch& scratch,
+                                           const middleware::queuez::Subscription& subscription,
+                                           const Reservation& reservation,
+                                           Prepared& prepared) noexcept;
+
+/** Builds the family-six fireteam snapshot naming this account's fireteam directory key. */
+/**
+ * Resolves the selected character's equipped emblem to a native definition index.
+ * @param index Receives the native definition index; unchanged when no emblem resolves.
+ * @param definitionHash Receives the equipped emblem hash; unchanged when no emblem resolves.
+ */
+void read_selected_emblem(const state::AccountState& account,
+                          std::uint16_t& index,
+                          std::uint32_t& definitionHash) noexcept;
+[[nodiscard]] bool prepare_fireteam(Scratch& scratch,
+                                    const middleware::queuez::Subscription& subscription,
+                                    const Reservation& reservation,
+                                    Prepared& prepared) noexcept;
+
+/** Builds the family-one equipment inspection snapshot for the subscribed root account, not
+    the connection's own. */
+[[nodiscard]] bool prepare_inspection(Scratch& scratch,
+                                      const middleware::queuez::Subscription& subscription,
+                                      const Reservation& reservation,
+                                      Prepared& prepared) noexcept;
+
 /** Initial family snapshots start at version zero. */
 inline constexpr std::int32_t kInitialFamilyVersion = 0;
 /** Family three carries the account roster selected by Web Service subscription. */
@@ -119,6 +146,8 @@ inline constexpr std::uint16_t kChangeFlags = 0;
  * @param subscription Family id the Client picked.
  * @param accountObjectId Id the account object publishes under.
  * @param reservation Prior payload prefixes that staging must keep.
+ * @param accountSelectionCleared The peer's account object names no character; the character
+ *        object stays resident.
  * @param prepared Gets the compressed object descriptors and scratch clear extents.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
@@ -128,6 +157,7 @@ prepare(Scratch& scratch,
         std::uint32_t accountObjectId,
         const Reservation& reservation,
         std::span<const queuez::AcquisitionPresentationRow> acquisitionPresentationRows,
+        bool accountSelectionCleared,
         Prepared& prepared) noexcept;
 
 /**

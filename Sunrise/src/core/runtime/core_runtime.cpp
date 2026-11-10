@@ -2,23 +2,28 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <string_view>
+#include <vector>
 
 #include "../../client/runtime/host/game_host_classification.h"
 #include "../../client/runtime/runtime.h"
 #include "../../middleware/content/packages/reader/overlay.h"
 #include "../../middleware/runtime/middleware_runtime.h"
 #include "../../server/runtime/server_runtime.h"
+#include "../../state/account/account_platform.h"
 #include "../../state/activity_sdk/generated_world/catalog_manifest.h"
 #include "../../state/activity_sdk/runtime.h"
 #include "../../state/build_data/runtime.h"
 #include "../../state/content_manifest/content_manifest_state_runtime.h"
+#include "../../state/coop/compatibility.h"
 #include "../../state/entitlements/entitlement_runtime.h"
 #include "../../state/investment/store.h"
 #include "../../state/mods/mods_runtime.h"
@@ -51,7 +56,9 @@ constexpr std::wstring_view kInstalledPackagesDirectory = L"packages";
     if (!state::investment::store::initialize(module)) {
         return false;
     }
-    return state::investment::store::validate();
+    return state::investment::store::bind_identity(
+               state::account::platform::declared_account_soid(settings::get().steam.user.steamId))
+           && state::investment::store::validate();
 }
 
 /**
@@ -111,6 +118,70 @@ void initialize_activity_sdk(void* module) noexcept {
     }
 }
 
+/** A mod ships the activity SDK rows of its own destinations in this file beside mod.json. */
+constexpr std::wstring_view kModActivitySdkPack = L"activity_sdk.pack";
+
+/**
+ * Maps the activity SDK pack of one loaded mod, when it ships one, and logs the outcome.
+ * @param record The loaded mod.
+ * @param modsDirectory Folder that holds every mod folder.
+ * @param output Receives the catalog when it loads.
+ */
+void load_mod_activity_sdk(const state::mods::Record& record,
+                           std::wstring_view modsDirectory,
+                           std::vector<state::activity_sdk::Snapshot>& output) noexcept {
+    const std::string_view folder = record.folder.view();
+    std::array<wchar_t, MAX_PATH> wide{};
+    const int length = MultiByteToWideChar(CP_UTF8,
+                                           MB_ERR_INVALID_CHARS,
+                                           folder.data(),
+                                           static_cast<int>(folder.size()),
+                                           wide.data(),
+                                           static_cast<int>(wide.size() - 1));
+    path::Buffer pack;
+    if (length <= 0 || !path::assign(pack, modsDirectory) || !path::append(pack, L"\\")
+        || !path::append(pack, std::wstring_view(wide.data(), static_cast<std::size_t>(length)))
+        || !path::append(pack, L"\\") || !path::append(pack, kModActivitySdkPack)
+        || GetFileAttributesW(pack.chars.data()) == INVALID_FILE_ATTRIBUTES) {
+        return;
+    }
+    const auto problems = std::span(record.problems).first(record.problemCount);
+    const bool remapped =
+        std::any_of(problems.begin(), problems.end(), [](const state::mods::Problem& problem) {
+            return problem.reason == state::mods::Reason::packageRemapped;
+        });
+    const char* result = "ok";
+    std::shared_ptr<state::activity_sdk::Catalog> catalog;
+    state::activity_sdk::Status status = state::activity_sdk::Status::catalogInvalid;
+    // A remapped mod's pack still names the package ids it was built with.
+    if (remapped) {
+        result = "package_remapped";
+    } else if (!state::activity_sdk::load_mod_path(pack.chars.data(), catalog, status)) {
+        result = state::activity_sdk::status_name(status);
+    } else {
+        try {
+            output.emplace_back(std::move(catalog));
+        } catch (...) {
+            result = "memory";
+        }
+    }
+    log::writef(log::Channel::core,
+                std::string_view(result) == "ok" ? log::Level::info : log::Level::warn,
+                "ev=activity_sdk stage=mod_pack mod=%.*s result=%s",
+                static_cast<int>(folder.size()),
+                folder.data(),
+                result);
+}
+
+/** Publishes the activity SDK packs of the loaded mods; mods load before this runs. */
+[[nodiscard]] bool load_mod_activity_sdks(void* context, const state::mods::View& view) noexcept {
+    auto& output = *static_cast<std::vector<state::activity_sdk::Snapshot>*>(context);
+    for (const state::mods::Record& record : std::span(view.records, view.loadedCount)) {
+        load_mod_activity_sdk(record, view.modsDirectory, output);
+    }
+    return true;
+}
+
 /**
  * Loads installed mods and adds their packages to the manifest the client will request.
  * @param module Loaded Sunrise module, which owns the mods folder.
@@ -165,6 +236,11 @@ initialize_mods(void* module, std::wstring_view game, std::wstring_view packages
     }
     state::build_data::bind_content(contentHash);
     initialize_activity_sdk(module);
+    // Mods ship the activity SDK rows of their own destinations.
+    std::vector<state::activity_sdk::Snapshot> modCatalogs;
+    if (state::mods::visit(&load_mod_activity_sdks, &modCatalogs)) {
+        state::activity_sdk::publish_mod_catalogs(std::move(modCatalogs));
+    }
     return true;
 }
 
@@ -251,13 +327,17 @@ bool initialize(void* module) noexcept {
             stage = "investment_store";
         } else if (!initialize_cheat_session()) {
             stage = "cheat_session";
+        } else if (settings::multiplayer() && !state::coop::compatibility::initialize(module)) {
+            // Co-op peers compare this record, so it is built before the server can answer one.
+            stage = "coop_compatibility";
         } else if (!state::initialize(module, settings::get().initialActivityDefaults)) {
             stage = "state";
         } else if (!middleware::initialize()) {
             stage = "middleware";
         } else if (!server::initialize()) {
             stage = "server";
-        } else if (!client::initialize(module)) {
+        } else if (settings::activates_client_hooks(settings::role())
+                   && !client::initialize(module)) {
             stage = "client";
         }
     }
@@ -268,7 +348,9 @@ bool initialize(void* module) noexcept {
         // A logging-stage failure has no sinks left to carry it, and reports nothing.
         log::write_elapsed(log::Channel::core, "ev=initialize phase=complete", startedTick, "fail");
         // Reverse every stage because the failing expression may have completed earlier stages.
-        (void)client::shutdown();
+        if (settings::activates_client_hooks(settings::role())) {
+            (void)client::shutdown();
+        }
         server::shutdown();
         middleware::shutdown();
         state::shutdown();
@@ -297,7 +379,7 @@ bool shutdown() noexcept {
     if (!g_initialized.load(std::memory_order_acquire)) {
         return true;
     }
-    if (!client::shutdown()) {
+    if (settings::activates_client_hooks(settings::role()) && !client::shutdown()) {
         // Server and State must remain valid while any Client hook is attached.
         return false;
     }

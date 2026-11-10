@@ -28,6 +28,8 @@ using AuthoredSceneDependencies =
 inline constexpr std::size_t kInstanceCapacity = state::activity::kSessionCapacity;
 /** Recent normalized events retained for the panel and HUD. */
 inline constexpr std::size_t kEventCapacity = 64;
+/** Links one activity can hold: one per BAP connection slot, of which there are eight. */
+inline constexpr std::size_t kRefusedLinkCapacity = 8;
 /**
  * Accepted client mission inputs copied in one paged feed read. The feed itself is unbounded:
  * the reader loops until it is empty, so this only sizes one copy.
@@ -120,11 +122,11 @@ enum class EventKind : std::uint8_t {
     sessionJoined = 26,
     /** A watched peer session left this destination; this is not a Host feed row. */
     sessionLeft = 27,
-    /** One schema-0x8080879F msg-19 target resolved to its authored type-31 source. */
+    /** One player-trigger msg-19 target resolved to its authored type-31 source. */
     playerTrigger = 28,
-    /** One schema-0x808087BF msg-19 reports that an exact authored Type-6 slot started. */
+    /** One cinematic msg-19 reports that an exact authored Type-6 slot started. */
     cinematicStarted = 29,
-    /** One schema-0x808087BF msg-19 reports Type-6 start failure or runtime termination. */
+    /** One cinematic msg-19 reports Type-6 start failure or runtime termination. */
     cinematicTerminated = 30,
     /** Accepted native Ghost interaction progress for one exact type-65 slot. */
     ghostLinkState = 31,
@@ -276,6 +278,46 @@ enum class ScriptableOverrideKind : std::uint8_t {
  */
 inline constexpr float kGhostLinkFinishFraction = 0.99F;
 
+/**
+ * Decides whether a body's arrival in the retained estate owes every other link a push. It does
+ * not change what a body carries: every msg 5 carries the whole estate either way.
+ * @return True for a body every client applies itself. The game replicates no device, trigger,
+ * directive, dialogue, scene or lifetime between peers, so only a push lets a client see one.
+ * A squad, combatant or damage-watch body is the authority's alone: native replication carries
+ * its effect, so its arrival owes nothing.
+ */
+[[nodiscard]] constexpr bool client_applied_override(ScriptableOverrideKind kind) noexcept {
+    switch (kind) {
+    case ScriptableOverrideKind::squad:
+    case ScriptableOverrideKind::combatantChannel:
+    case ScriptableOverrideKind::combatantBinding:
+    case ScriptableOverrideKind::combatantSequence:
+    case ScriptableOverrideKind::squadObjective:
+    case ScriptableOverrideKind::combatantProgram:
+    case ScriptableOverrideKind::combatantRetirement:
+    case ScriptableOverrideKind::damageWatch:
+        return false;
+    case ScriptableOverrideKind::object:
+    case ScriptableOverrideKind::sequence:
+    case ScriptableOverrideKind::cinematic:
+    case ScriptableOverrideKind::type23:
+    case ScriptableOverrideKind::type31:
+    case ScriptableOverrideKind::objectiveReset:
+    case ScriptableOverrideKind::task:
+    case ScriptableOverrideKind::authoredScene:
+    case ScriptableOverrideKind::dialogue:
+    case ScriptableOverrideKind::sdkAuth:
+    case ScriptableOverrideKind::lifetime:
+    case ScriptableOverrideKind::performance:
+    case ScriptableOverrideKind::authoredSceneEvent:
+    case ScriptableOverrideKind::authoredSceneStop:
+    case ScriptableOverrideKind::interactableObject:
+    case ScriptableOverrideKind::ghostLink:
+        return true;
+    }
+    return true;
+}
+
 /** Current diagnostic state of one retained incident. */
 enum class IncidentStatus : std::uint8_t {
     received,
@@ -336,7 +378,15 @@ struct SenseInput final {
     middleware::bap::activity_message::sense_update::DecodedPacket decoded{};
     bool hasFirstObject{};
     std::uint64_t attemptGeneration{};
+    /**
+     * Bubbles whose grant the source link held when the message was framed, one bit per bubble
+     * ordinal. The holder of a bubble simulates its squads; another link's squad Sense is a
+     * replica's view.
+     */
+    std::uint64_t heldBubbles{};
 };
+static_assert(state::build_data::scenarios::kBubbleCapacity
+              <= sizeof(SenseInput::heldBubbles) * 8U);
 
 /** Exact package and schema identity for one observed Sense ClientRef. */
 struct SenseObservationKey final {
@@ -348,12 +398,70 @@ struct SenseObservationKey final {
     std::uint8_t slotType{};
 };
 
+/**
+ * Retires recovery reports once their native connections have left the binding, and every report
+ * from an attempt before the current one: a checkpoint restart re-places the squads they describe.
+ * @param generations Sources whose reports stay.
+ * @param attemptGeneration The binding's current mission attempt.
+ */
+void retain_squad_sense_generations(const state::activity::SessionBinding& binding,
+                                    std::span<const std::uint64_t> generations,
+                                    std::uint64_t attemptGeneration) noexcept;
+
 /** Copies the squad's merged recovery state for this exact ActivityClient generation. */
 [[nodiscard]] bool
 snapshot_squad_sense(const state::activity::SessionBinding& binding,
                      std::uint64_t sourceGeneration,
                      const SenseObservationKey& key,
                      middleware::bap::activity_message::squad_sense::State& output) noexcept;
+
+/**
+ * Copies the keys of every squad the releasing link or the recipient reported, once each, for the
+ * link granted a released bubble.
+ * @param recipientGeneration The link being granted the bubble.
+ * @param releaserGeneration The link that released the bubble; it may be the recipient itself.
+ * @param output Receives keys in report order.
+ * @return The number of keys written, at most `output.size()`.
+ */
+[[nodiscard]] std::size_t handover_squad_sense_keys(const state::activity::SessionBinding& binding,
+                                                    std::uint64_t recipientGeneration,
+                                                    std::uint64_t releaserGeneration,
+                                                    std::span<SenseObservationKey> output) noexcept;
+
+/**
+ * Copies the bubble's state for one squad, for the link granted the released bubble: its
+ * releaser's last valid state, withdrawn or not, or the recipient's own when that is newer and was
+ * reported while the recipient held the bubble. A report from the recipient's replica never
+ * replaces the releaser's. The client that takes the bubble over resumes every squad. A client
+ * walking back into a bubble it unloaded gets its cleared encounters, which stay dead; its other
+ * squads start natively. A recipient whose own live record is the truth is owed nothing; every
+ * body replays it.
+ * @param recipientGeneration The link being granted the bubble.
+ * @param releaserGeneration The link that held the bubble before it; it may be the recipient.
+ * @param bubble The bubble being granted.
+ * @return True when the recipient is owed the state.
+ */
+[[nodiscard]] bool snapshot_handover_squad_sense(
+    const state::activity::SessionBinding& binding,
+    std::uint64_t recipientGeneration,
+    std::uint64_t releaserGeneration,
+    std::uint8_t bubble,
+    const SenseObservationKey& key,
+    middleware::bap::activity_message::squad_sense::State& output) noexcept;
+
+/**
+ * Makes the state a delivered grant body handed over the recipient's own record, so its later
+ * deltas merge onto the state it resumed from and every later body replays it. The record counts
+ * as reported while the recipient held the bubble.
+ * @param bubble The bubble the body granted.
+ * @param keys The squads the body handed over.
+ * @return The number of records seeded.
+ */
+std::size_t seed_handover_squad_sense(const state::activity::SessionBinding& binding,
+                                      std::uint64_t recipientGeneration,
+                                      std::uint64_t releaserGeneration,
+                                      std::uint8_t bubble,
+                                      std::span<const SenseObservationKey> keys) noexcept;
 
 /** What the msg-5 builder needs to publish one type-65 Sense root. */
 struct GhostLinkLevel final {
@@ -534,6 +642,11 @@ struct Event final {
     std::uint8_t triggerContinuity{};
     /** Health and shield fractions, for damageState events. Negative until published. */
     float damageHealth{-1.0F};
+    /** Channel-2 observations retain raw levels and the exact admitted lifetime. */
+    bool damageFromEntity{};
+    state::gameplay::entity_identity::Source damageEntitySource{};
+    state::gameplay::entity_identity::RetiredLifetime damageEntityLifetime{};
+    state::gameplay::entity_identity::DamagePools damageEntityPools{};
     float damageShield{-1.0F};
     std::int32_t damageRevision{};
     /** Current position, power and lock levels; masks distinguish unknown fields. */
@@ -664,12 +777,12 @@ struct Event final {
     std::uint32_t incidentExtraTargets{};
     std::uint32_t incidentSelectorBytes{};
     std::uint32_t incidentPayloadBytes{};
-    /** Type-31 source ClientRef carried by a schema-0x8080879F player-trigger incident. */
+    /** Type-31 source ClientRef carried by a player-trigger incident. */
     std::uint32_t playerTriggerRegistryKey{};
     std::uint32_t playerTriggerResolvedObjectId{};
     std::int16_t playerTriggerSlotIndex{-1};
     std::int8_t playerTriggerSlotType{-1};
-    /** Type-6 source ClientRef carried by a schema-0x808087BF cinematic incident. */
+    /** Type-6 source ClientRef carried by a cinematic incident. */
     std::uint32_t cinematicRegistryKey{};
     std::uint64_t cinematicRuntimeObjectId{};
     float cinematicEventValue{};
@@ -762,6 +875,10 @@ struct InstanceSnapshot final {
     state::activity::SessionBinding binding{};
     std::uint64_t stateRevision{};
     std::uint64_t transportRevision{};
+    /** State revision the links in `refusedLinks` could not build a msg-5 body for. */
+    std::uint64_t refusedStateRevision{};
+    /** ActivityClient generations that refused `refusedStateRevision`; zero rows are free. */
+    std::array<std::uint64_t, kRefusedLinkCapacity> refusedLinks{};
     std::uint64_t lastEventSequence{};
     std::uint64_t lastOutputAttemptTick{};
     std::uint64_t lastOutputSourceGeneration{};
@@ -770,6 +887,12 @@ struct InstanceSnapshot final {
     std::uint64_t scriptableRevision{};
     std::uint64_t scriptableTransportRevision{};
     std::uint64_t scriptableReservedRevision{};
+    /** Advances when a body every client applies joins the retained estate or the lifetime latches.
+     */
+    std::uint64_t scriptableEstateRevision{};
+    /** Output revision of the newest retained dialogue pulse; a link behind it still owes the line.
+     */
+    std::uint64_t dialogueRevision{};
     std::uint32_t senseCount{};
     std::uint32_t outputAttempts{};
     std::uint32_t incidentsPending{};
@@ -862,7 +985,13 @@ struct DiagnosticsSnapshot final {
 /** Activity-state value consumed by the msg-5 output adapter. */
 struct AuthState final {
     std::uint64_t revision{};
+    /** Retained-estate revision; a link behind it owes its client a roster. */
+    std::uint64_t estateRevision{};
+    /** Newest retained dialogue pulse; a link's roster carries the pulses past its own cursor. */
+    std::uint64_t dialogueRevision{};
     std::uint8_t lifetimeState{kDefaultLifetimeState};
+    /** The adapter refused this revision's body. The next revision clears it. */
+    bool refused{};
 };
 
 /** Immutable outbound incident selected after one connection's staged revision. */
@@ -932,6 +1061,29 @@ pending_scriptable_tail(const state::activity::SessionBinding& binding,
 [[nodiscard]] bool scriptable_auth_estate(const state::activity::SessionBinding& binding,
                                           std::uint64_t activityClientGeneration,
                                           std::vector<PendingScriptableOverride>& output) noexcept;
+
+/** What admission reads of one retained Auth body: its ClientRef, its kind and its link. */
+struct ScriptablePin final {
+    /** ActivityClient generation the body was staged on. */
+    std::uint64_t expectedActivityClientGeneration{};
+    std::uint32_t registryKey{};
+    std::uint32_t objectTag{};
+    std::uint16_t slotIndex{};
+    std::uint8_t slotType{};
+    ScriptableOverrideKind kind{ScriptableOverrideKind::type23};
+};
+
+/** Every retained body is staged against one exact ClientRef counter, which bounds the estate. */
+inline constexpr std::size_t kScriptablePinCapacity = kScriptableGuardCapacity;
+
+/**
+ * Copies the pin of every retained Auth body of one binding, without the body bytes.
+ * @param count Receives the number of rows written.
+ * @return False when the estate does not fit the output; nothing is written then.
+ */
+[[nodiscard]] bool scriptable_auth_pins(const state::activity::SessionBinding& binding,
+                                        std::span<ScriptablePin> output,
+                                        std::size_t& count) noexcept;
 
 /** Queues a native objective decision after both SDK slot identities are validated. */
 [[nodiscard]] bool
@@ -1095,13 +1247,15 @@ actor_squad_binding_status(const state::activity::SessionBinding& binding,
     std::uint64_t expectedActivityClientGeneration,
     const ScriptableOutputReservation* reservation = nullptr) noexcept;
 
-/** Queues one type-31 arm, or a disarm, for an exact package-derived ClientRef. */
+/** Queues one generation-bound type-31 arm or disarm for an exact package-derived ClientRef. */
 [[nodiscard]] bool request_type31_override(const state::activity::SessionBinding& binding,
                                            const ScriptableTarget& target,
+                                           std::uint64_t expectedActivityClientGeneration,
                                            const ScriptableOutputReservation* reservation = nullptr,
                                            bool enabled = true) noexcept;
 
-/** Queues one type-31 pulse carried by the exact generated group in the current activity seed. */
+/** Queues one type-31 arm/disarm carried by the exact generated group in the current activity seed.
+ */
 [[nodiscard]] bool request_state_local_type31_override(
     const state::activity::SessionBinding& binding,
     const ScriptableTarget& target,
@@ -1230,7 +1384,10 @@ withdraw_scriptable_output(const state::activity::SessionBinding& binding,
                            std::uint64_t intentSequence,
                            std::uint64_t expectedRevision) noexcept;
 
-/** Applies queued client and operator events on the server service slice. */
+/**
+ * Applies queued client and operator events after admitting every retained activity's storage.
+ * A record allocation or capacity failure leaves the ordered input queue intact for a later slice.
+ */
 void service(std::uint64_t now) noexcept;
 
 /** Copies the latest complete diagnostic view. */
@@ -1286,26 +1443,33 @@ void read_mission_inputs_after(MissionInputCursor after, MissionInputRead& outpu
 /** @return Stable text for one exact scalar-selection result. */
 [[nodiscard]] const char* sense_scalar_status_name(SenseScalarStatus status) noexcept;
 
-/** Reads the committed Auth state for one exact activity generation. */
+/**
+ * Reads the committed Auth state for one exact activity generation.
+ * @param binding Exact activity owning the state.
+ * @param sourceGeneration ActivityClient asking; `refused` is true only for its own refusal.
+ * @param output Receives the revision, its lifetime state, and the asking link's refusal.
+ * @return True when the activity has a Host instance.
+ */
 [[nodiscard]] bool auth_state(const state::activity::SessionBinding& binding,
+                              std::uint64_t sourceGeneration,
                               AuthState& output) noexcept;
 
 /** Reads the one pending incident occupying the exact instance's serialized output slot. */
 [[nodiscard]] bool pending_incident(const state::activity::SessionBinding& binding,
                                     PendingIncident& output) noexcept;
 
-/** Reads the one pending typed ClientRef body without changing its counter. */
-[[nodiscard]] bool pending_scriptable_override(const state::activity::SessionBinding& binding,
-                                               PendingScriptableOverride& output) noexcept;
-
 /**
  * Reads an override for one exact ActivityClient generation.
- * A state-local request authorized by another generation is atomically canceled here.
+ * A request authorized by another generation remains pending for its own client.
  */
 [[nodiscard]] bool
 pending_scriptable_override_for_activity_client(const state::activity::SessionBinding& binding,
                                                 std::uint64_t activityClientGeneration,
                                                 PendingScriptableOverride& output) noexcept;
+
+/** Withdraws only queued and unstaged controls authorized by a retiring native client. */
+void retire_scriptable_client(const state::activity::SessionBinding& binding,
+                              std::uint64_t generation) noexcept;
 
 /** Cancels the exact instance's raw incident before any later transport staging. */
 [[nodiscard]] bool cancel_pending_incident(const state::activity::SessionBinding& binding) noexcept;
@@ -1315,12 +1479,17 @@ pending_scriptable_override_for_activity_client(const state::activity::SessionBi
 cancel_pending_scriptable_override(const state::activity::SessionBinding& binding,
                                    std::uint64_t expectedRevision) noexcept;
 
-/** Records one refused BAP attempt without clearing the committed output. */
+/**
+ * Records one link's refused msg-5 body against the state revision it carried.
+ * A refusal other than a missing epoch is final for that link and revision.
+ * @param soleLink True when no other link can still carry the revision, so its slot is freed.
+ */
 void note_auth_attempt(const state::activity::SessionBinding& binding,
                        std::uint64_t sourceGeneration,
                        std::uint64_t revision,
                        std::uint8_t lifetimeState,
-                       OutputStatus status) noexcept;
+                       OutputStatus status,
+                       bool soleLink) noexcept;
 
 /** Marks one committed Auth revision as staged into the transport output queue. */
 void note_auth_transport_staged(const state::activity::SessionBinding& binding,

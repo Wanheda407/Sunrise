@@ -233,7 +233,7 @@ constexpr std::array<LegacyQuestStep, 3> kLegacyQuestSteps{{
     // One account view for the whole pool. Reading it copies the whole account, and the pool is
     // walked candidate by candidate, so taking it per candidate would copy it dozens of times to
     // answer dozens of questions about the same unchanging view.
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::bound_account_snapshot();
     for (std::size_t at = 0; at < poolCount; ++at) {
         if (state::account::holds_pursuit(account, pool[at])) {
             ++held;
@@ -620,18 +620,19 @@ constexpr std::uint32_t kAbsentNameHash = 0x811C9DC5U;
     if (resolved) {
         itemDefinitionIndex = item.definitionIndex;
     }
-    core::log::writef(core::log::Channel::server,
-                      resolved ? core::log::Level::info : core::log::Level::warn,
-                      "ev=ws904 stage=rowless vendor=%d slot=%d installed=%u sale=%u third=%u "
-                      "hash=0x%08X item=%u resolved=%u",
-                      static_cast<int>(vendorIndex),
-                      static_cast<int>(slotIndex),
-                      static_cast<unsigned>(definition.installedCount),
-                      static_cast<unsigned>(definition.saleCount),
-                      static_cast<unsigned>(definition.thirdCount),
-                      definitionHash,
-                      static_cast<unsigned>(itemDefinitionIndex),
-                      resolved ? 1U : 0U);
+    core::log::writef(
+        core::log::Channel::server,
+        resolved ? core::log::Level::info : core::log::Level::warn,
+        "ev=ws904 stage=rowless vendor=%d slot=%d installed=%u sale=%u interactions=%u "
+        "hash=0x%08X item=%u resolved=%u",
+        static_cast<int>(vendorIndex),
+        static_cast<int>(slotIndex),
+        static_cast<unsigned>(definition.installedCount),
+        static_cast<unsigned>(definition.saleCount),
+        static_cast<unsigned>(definition.interactionCount),
+        definitionHash,
+        static_cast<unsigned>(itemDefinitionIndex),
+        resolved ? 1U : 0U);
     return resolved;
 }
 

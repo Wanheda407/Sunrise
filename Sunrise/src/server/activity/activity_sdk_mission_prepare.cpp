@@ -1,9 +1,12 @@
 #include <Windows.h>
 
 #include <array>
+#include <cstddef>
 #include <limits>
 
 #include "../../middleware/bap/activity_message/sensor_auth_update.h"
+#include "../../middleware/content/packages/schema/generated/tag_classes_80804f.h"
+#include "../../middleware/content/packages/schema/generated/tag_classes_808062.h"
 #include "../../state/activity/runtime.h"
 #include "activity_sdk_behavior_scope.h"
 #include "activity_sdk_mission_internal.h"
@@ -15,12 +18,17 @@ namespace sunrise::server::activity::activity_sdk_mission::detail {
 namespace layouts = state::build_data::scenarios;
 namespace message = middleware::bap::activity_message::sensor_auth_update;
 namespace sdk = state::activity_sdk;
+namespace generated = middleware::content::packages::schema::generated;
 namespace sdk_route = server::activity::activity_sdk_scriptables;
 
 namespace {
 
 SRWLOCK g_materializeLock{SRWLOCK_INIT};
 std::array<layouts::RosterGroup, message::kPublishedGroupCapacity> g_materializedGroups{};
+
+/** A scene resource row names the descriptor's resource field. */
+constexpr std::uint32_t kSceneResourceOffset =
+    offsetof(generated::AuthoredSceneSlotDescriptor, resource);
 
 /** Maps the SDK materializer's closed set of semantic failures. */
 [[nodiscard]] Status mission_status(sdk::MissionSeedStatus status) noexcept {
@@ -140,6 +148,9 @@ namespace {
                                        link.effectiveRegion)) {
         return SceneStatus::wrongState;
     }
+    if (lease.publicationRefused) {
+        return SceneStatus::missionSeedUnavailable;
+    }
     if (lease.publicationPending || lease.publishedRevision != lease.revision) {
         return SceneStatus::missionSeedPending;
     }
@@ -247,7 +258,7 @@ namespace {
     if (!state::activity::binding_matches(view.binding)) {
         return Status::staleBinding;
     }
-    (void)server::bap::activity_link_view(view.binding, link);
+    (void)server::bap::activity_link_view(view.binding, view.activityClientGeneration, link);
     switch (
         sdk::revalidate(view, view.binding, link.matchingLinks, link.activityClientGeneration)) {
     case sdk::Status::ready:
@@ -401,10 +412,9 @@ namespace {
         || resource.resourceTag == sdk::format::kAbsentIndex
         || resource.resourceClass != sdk::format::kAuthoredSceneResourceClass
         || resource.flags != sdk::format::kAuthoredSceneResourceExact
-        || resource.descriptorOffset > (std::numeric_limits<std::uint32_t>::max)()
-                                           - sdk::format::kAuthoredSceneResourceRelativeOffset
-        || resource.resourceFieldOffset
-               != resource.descriptorOffset + sdk::format::kAuthoredSceneResourceRelativeOffset) {
+        || resource.descriptorOffset
+               > (std::numeric_limits<std::uint32_t>::max)() - kSceneResourceOffset
+        || resource.resourceFieldOffset != resource.descriptorOffset + kSceneResourceOffset) {
         return SceneStatus::missingResource;
     }
 

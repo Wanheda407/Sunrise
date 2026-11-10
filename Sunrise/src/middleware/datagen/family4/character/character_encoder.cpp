@@ -32,19 +32,20 @@ constexpr std::uint8_t kNativeFalse = 0;
 /** Stackable quest items needed by the collectible interactions currently supported. */
 struct CollectibleQuest {
     std::uint32_t definitionHash{};
-    /** Lore completion flag which consumes this quest; zero keeps the prerequisite authored. */
+    /** Lore completion flag which consumes this quest. */
     std::uint16_t completionFlag{};
 };
-/** One row per supported collectible quest; a claimed completion flag drops the row. */
-constexpr std::array<CollectibleQuest, 4> kCollectibleQuests{{
-    {0x57C4540AU, 0U},
+/**
+ * One row per supported collectible quest; a claimed completion flag drops the row.
+ * TODO: extract; no package row found yet links a quest item to the record that consumes it.
+ */
+constexpr std::array<CollectibleQuest, 3> kCollectibleQuests{{
     {0x85CC476EU, 10762U},
     {0xB099029AU, 10766U},
     {0xC3535D63U, 10769U},
 }};
 /** One character has one customisation header, so both records carry the same 36 bytes. */
-static_assert(character_record::layout::kHeaderBlockBytes.size()
-              == layout::kCustomisationHeaderSize);
+static_assert(state::kAppearanceHeaderSize == layout::kCustomisationHeaderSize);
 /** Character object B repeats the family-three periodic-reset block byte for byte. */
 static_assert(sizeof(character_record::layout::PeriodicReset) == layout::kPeriodicResetRecordSize);
 
@@ -120,9 +121,8 @@ constexpr std::int32_t kOccupiedRowWatermark = 1;
     std::size_t nextRow = 0;
     std::size_t rowLimit = 0;
     for (const CollectibleQuest& quest : kCollectibleQuests) {
-        if (quest.completionFlag != 0
-            && (state::unlocks::records::claimed(quest.completionFlag)
-                || state::unlocks::records::claimable(quest.completionFlag))) {
+        if (state::unlocks::records::claimed(quest.completionFlag)
+            || state::unlocks::records::claimable(quest.completionFlag)) {
             continue;
         }
         state::build_data::items::Definition item{};
@@ -233,32 +233,13 @@ summary_matches_loadout(const loadout::ResolvedLoadout& resolvedLoadout,
     return true;
 }
 
-} // namespace
-
 /** Encodes one selected-character object from live State and resolved installed mappings. */
-bool encode(const state::CharacterState& state,
-            const loadout::ResolvedLoadout& resolvedLoadout,
-            const state::equipment::light::Evaluation& lightEvaluation,
-            std::span<std::byte> output) noexcept {
-    state::unlocks::Table unlocks;
-    return state::unlocks::snapshot(unlocks)
-           && encode(state, resolvedLoadout, lightEvaluation, output, unlocks);
-}
-
-/**
- * Character unlocks must match the live or prepared inventory view being encoded.
- * @param state Character identity and inventory to encode.
- * @param resolvedLoadout Item mappings for this character's inventory.
- * @param lightEvaluation Equipment light values for the same loadout.
- * @param output Receives the character object; unchanged on failure.
- * @param unlocks Unlock snapshot for this character, including any prepared quest value.
- * @return False when state, mappings, light values, or output bounds are invalid.
- */
-bool encode(const state::CharacterState& state,
-            const loadout::ResolvedLoadout& resolvedLoadout,
-            const state::equipment::light::Evaluation& lightEvaluation,
-            std::span<std::byte> output,
-            const state::unlocks::Table& unlocks) noexcept {
+bool encode_with_unlocks(const state::CharacterState& state,
+                         const loadout::ResolvedLoadout& resolvedLoadout,
+                         const state::equipment::light::Evaluation& lightEvaluation,
+                         std::span<std::byte> output,
+                         const state::unlocks::Table* preparedUnlocks,
+                         bool publicOnly) noexcept {
     if (!valid(state) || !valid(resolvedLoadout)
         || !summary_matches_loadout(resolvedLoadout, lightEvaluation)
         || output.size() < layout::kObjectSize) {
@@ -270,10 +251,9 @@ bool encode(const state::CharacterState& state,
     object.identity.race = static_cast<std::int8_t>(state.race);
     object.identity.gender = static_cast<std::int8_t>(state.gender);
     object.identity.characterClass = static_cast<std::int8_t>(state.characterClass);
-    const auto& headerSource = state.appearanceHeaderValid
-                                   ? state.appearanceHeader
-                                   : character_record::layout::kHeaderBlockBytes;
-    std::memcpy(object.customisationHeader.data(), headerSource.data(), headerSource.size());
+    std::memcpy(object.customisationHeader.data(),
+                state.appearanceHeader.data(),
+                state.appearanceHeader.size());
     object.lastOrbitedDestination = state.lastOrbitedDestination;
     // No previous activity is tracked, and a zero here would name the orbit activity.
     object.previousActivityIndex = kAbsentActivityIndex;
@@ -297,39 +277,51 @@ bool encode(const state::CharacterState& state,
     for (layout::ItemStackRow& stack : object.itemStacks) {
         stack.selector = kEmptyItemStackSelector;
     }
-    // Use the supplied quest state even when the acquisition has not committed yet.
-    for (std::size_t index = 0; index < object.acquiredFlags.size(); ++index) {
-        object.acquiredFlags[index] = static_cast<std::byte>(
-            index < unlocks.characterObjectFlags.size() ? unlocks.characterObjectFlags[index]
-                                                        : std::uint8_t{});
-    }
-    for (std::size_t index = 0; index < object.objectiveValues.size(); ++index) {
-        object.objectiveValues[index] =
-            index < unlocks.characterObjectValues.size() ? unlocks.characterObjectValues[index] : 0;
+    // Preserve the supplied quest state even before its acquisition commits.
+    if (!publicOnly) {
+        state::unlocks::Table liveUnlocks;
+        if (preparedUnlocks == nullptr && !state::unlocks::snapshot(liveUnlocks)) {
+            return false;
+        }
+        const auto& unlocks = preparedUnlocks != nullptr ? *preparedUnlocks : liveUnlocks;
+        for (std::size_t index = 0; index < object.acquiredFlags.size(); ++index) {
+            object.acquiredFlags[index] = static_cast<std::byte>(
+                index < unlocks.characterObjectFlags.size() ? unlocks.characterObjectFlags[index]
+                                                            : std::uint8_t{});
+        }
+        for (std::size_t index = 0; index < object.objectiveValues.size(); ++index) {
+            object.objectiveValues[index] = index < unlocks.characterObjectValues.size()
+                                                ? unlocks.characterObjectValues[index]
+                                                : 0;
+        }
     }
     if (!build_equipment_summary(lightEvaluation, object.equipmentSummary)) {
         return false;
     }
-    if (!progression::key_bank(state::build_data::progressions::Scope::character,
-                               object.progressions)) {
+    if (publicOnly) {
+        for (auto& entry : object.progressions) {
+            entry.definitionIndex = kEmptyDefinitionIndex;
+        }
+    } else if (!progression::key_bank(state::build_data::progressions::Scope::character,
+                                      object.progressions)) {
         return false;
     }
-    // Rows are validated sorted, so the last row bounds the prefix the native walk must cover.
-    object.inventoryRowCount =
-        resolvedLoadout.itemCount == 0
-            ? std::uint32_t{}
-            : static_cast<std::uint32_t>(
-                  resolvedLoadout.items[resolvedLoadout.itemCount - 1].inventoryRow + 1);
+    // Bound the native walk by the last row actually published, including on the public path.
+    object.inventoryRowCount = 0;
     for (std::size_t index = 0; index < resolvedLoadout.itemCount; ++index) {
         const loadout::ResolvedItem& item = resolvedLoadout.items[index];
+        if (publicOnly && !item.equipped) {
+            continue;
+        }
+        object.inventoryRowCount = static_cast<std::uint32_t>(item.inventoryRow + 1);
         inventory::layout::Entry& inventoryRow = object.inventoryItems[item.inventoryRow];
         inventoryRow.definitionIndex = item.instance.baseDefinitionIndex;
         inventoryRow.instanceSoid = item.instance.instanceSoid;
         inventoryRow.quantity = item.quantity;
-        inventoryRow.mutationSerial = item.mutationSerial;
+        inventoryRow.mutationSerial = publicOnly ? 0 : item.mutationSerial;
         inventoryRow.flags = item.flags;
         // Badge state and instance watermarks are both addressed by inventory row.
-        if (!item.seen) {
+        if (!publicOnly && !item.seen) {
             object.newItemFlags[item.inventoryRow / kBitsPerFlagByte] |=
                 std::byte{1U} << (item.inventoryRow % kBitsPerFlagByte);
         }
@@ -338,7 +330,8 @@ bool encode(const state::CharacterState& state,
             object.equippedInstanceSoids[item.equipmentSlot] = item.instance.instanceSoid;
         }
     }
-    if (!place_character_stacks(state, object) || !place_collectible_quest_items(object)) {
+    if (!publicOnly
+        && (!place_character_stacks(state, object) || !place_collectible_quest_items(object))) {
         return false;
     }
 
@@ -346,6 +339,25 @@ bool encode(const state::CharacterState& state,
     std::fill(output.begin(), output.end(), std::byte{});
     std::memcpy(output.data(), &object, sizeof object);
     return true;
+}
+
+} // namespace
+
+bool encode(const state::CharacterState& state,
+            const loadout::ResolvedLoadout& resolvedLoadout,
+            const state::equipment::light::Evaluation& lightEvaluation,
+            std::span<std::byte> output,
+            bool publicOnly) noexcept {
+    return encode_with_unlocks(
+        state, resolvedLoadout, lightEvaluation, output, nullptr, publicOnly);
+}
+
+bool encode(const state::CharacterState& state,
+            const loadout::ResolvedLoadout& resolvedLoadout,
+            const state::equipment::light::Evaluation& lightEvaluation,
+            std::span<std::byte> output,
+            const state::unlocks::Table& unlocks) noexcept {
+    return encode_with_unlocks(state, resolvedLoadout, lightEvaluation, output, &unlocks, false);
 }
 
 } // namespace sunrise::middleware::datagen::family4::character

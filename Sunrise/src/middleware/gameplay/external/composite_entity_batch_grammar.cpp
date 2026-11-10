@@ -3,8 +3,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <span>
 
+#include "../../content/packages/schema/generated/tag_classes_808094.h"
 #include "composite_entity_codec_internal.h"
 
 namespace sunrise::middleware::gameplay::external {
@@ -13,6 +15,7 @@ namespace {
 namespace format = state::activity_sdk::format;
 namespace wire = actor_wire;
 namespace bits = middleware::encoding::bits;
+namespace generated = middleware::content::packages::schema::generated;
 
 /** The transform's packed angle code is seven bits. */
 constexpr std::uint8_t kAngleWidth = 7;
@@ -87,7 +90,8 @@ constexpr std::size_t kPositionComponents = 3;
         }
     }
     // The ordered roots follow the native SObject update reader.
-    constexpr std::array<std::uint32_t, 2> kRelationSchemas{0x8080949BU, 0x8080949AU};
+    constexpr std::array<std::uint32_t, 2> kRelationSchemas{generated::C8080949b::kClass,
+                                                            generated::C8080949a::kClass};
     detail::ResolverContext resolver{&context, sobject_family()};
     for (const auto schema : kRelationSchemas) {
         bool present = false;
@@ -124,9 +128,19 @@ static bool append_compiled_component(const CompositeEntityCodecContext& context
     detail::ResolverContext resolver{
         &context, sobject_family(), std::span(bitmap).first(plan.bitmapBits)};
     resolver.componentTag = componentTag;
+    std::uint32_t poolOrdinal = 0;
     for (const auto& entry : plan.entries) {
         if (entry.guardBit >= plan.bitmapBits || entry.repeatCount > wire::kRuntimeValueCapacity) {
             return false;
+        }
+        const bool damagePool = componentTag == detail::kCombatantDamageComponentPlan
+                                && entry.schemaHandle == detail::kCombatantDamagePoolSchema;
+        const auto firstPool = poolOrdinal;
+        if (damagePool) {
+            if (poolOrdinal > (std::numeric_limits<std::uint32_t>::max)() - entry.repeatCount) {
+                return false;
+            }
+            poolOrdinal += entry.repeatCount;
         }
         if (bitmap[entry.guardBit] == 0) {
             continue;
@@ -138,6 +152,7 @@ static bool append_compiled_component(const CompositeEntityCodecContext& context
                 return false;
             }
             resolver.firstFieldBit = static_cast<std::uint32_t>(base);
+            resolver.damagePool = damagePool ? firstPool + index : format::kAbsentIndex;
             if (!detail::append_schema(reader, mirror, resolver, entry.schemaHandle, nullptr)) {
                 return false;
             }
@@ -319,7 +334,7 @@ namespace detail {
     if (!read_payload_impl(*context, token, type, part, baseline, verifier, canonical)
         || !load_mirror(canonical, canonicalView) || canonical.byteCount != payload.byteCount
         || std::memcmp(canonical.state.data(), payload.state.data(), payload.byteCount) != 0
-        || canonical.actorSource != payload.actorSource) {
+        || canonical.actorSource != payload.actorSource || canonical.damage != payload.damage) {
         return false;
     }
     return write_mirror(writer, view);

@@ -2,11 +2,22 @@
 
 #include "../../ui/runtime/settings.h"
 #include "external/definition.h"
+#include "server_endpoint/definition.h"
 
 namespace sunrise::core::settings::client {
 
+/** Opt-in startup exports for Sunrise Studio, written below the Sunrise `exports` directory. */
+struct Exports {
+    /** Writes the installed package keys to `package_keys.bin`. */
+    bool packageKeys{false};
+    /** Writes the tag reflection records to `tagdefs-raw.<sha8>.json`. */
+    bool tagDefinitions{false};
+};
+
 /** Read-only Client settings parsed by Core. */
 struct Settings {
+    server_endpoint::Settings serverEndpoint;
+    std::uint64_t machineId{};
     /** In-game UI visibility and input policy. */
     ui::runtime::Settings userInterface;
     /** Points the Client at a server outside this process. Off answers everything in process. */
@@ -22,8 +33,8 @@ struct Settings {
     bool revealLoreBooks{true};
     /** Unlocks the cheat tools. A session with them unlocked saves no progress. */
     bool cheats{false};
-    /** Writes the installed package keys for Sunrise Studio at startup when requested. */
-    bool dumpPackageKeys{false};
+    /** Startup exports for Sunrise Studio; all off by default. */
+    Exports exports;
 };
 
 } // namespace sunrise::core::settings::client

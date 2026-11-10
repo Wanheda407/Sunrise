@@ -1,3 +1,5 @@
+#include "../account/account_context.h"
+#include "../account/public_profiles.h"
 #include "store_internal.h"
 
 namespace sunrise::state::investment::store {
@@ -23,8 +25,7 @@ bool read_characters(AccountState& output) noexcept {
                           character.equippedTitleRecordIndex,
                           character.acquiredSubclassAbilityMask,
                           character.nextInventorySerial,
-                          character.appearanceHeader,
-                          character.appearanceHeaderValid)
+                          character.appearanceHeader)
             || slot != output.characterCount || slot >= output.characters.size()) {
             return false;
         }
@@ -62,7 +63,7 @@ bool read_rewards(AccountState& output) noexcept {
 
 /** Characters are saved before their items to satisfy foreign keys. */
 bool write_characters(const AccountState& value) noexcept {
-    Statement rows("INSERT INTO characters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    Statement rows("INSERT INTO characters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     for (std::size_t slot = 0; slot < value.characterCount; ++slot) {
         const auto& character = value.characters[slot];
         if (!rows.write(slot,
@@ -78,8 +79,7 @@ bool write_characters(const AccountState& value) noexcept {
                         character.equippedTitleRecordIndex,
                         character.acquiredSubclassAbilityMask,
                         character.nextInventorySerial,
-                        character.appearanceHeader,
-                        character.appearanceHeaderValid)) {
+                        character.appearanceHeader)) {
             return false;
         }
     }
@@ -99,6 +99,62 @@ bool write_characters(const AccountState& value) noexcept {
 }
 
 } // namespace
+
+bool owns_account_root(std::uint64_t rootSoid) noexcept {
+    const std::lock_guard lock(g_mutex);
+    if (!local_account_access() || rootSoid == 0) {
+        return false;
+    }
+    // One scalar query avoids loading equipment, preferences and inventory just to route a root.
+    Statement row("SELECT EXISTS(SELECT 1 FROM account WHERE id=1 AND soid=?1 "
+                  "UNION ALL SELECT 1 FROM characters WHERE soid=?1)");
+    int owned{};
+    return row.parameters(rootSoid) && row.step() == SQLITE_ROW && row.column(0, owned)
+           && row.step() == SQLITE_DONE && owned != 0;
+}
+
+bool read_selected_character(std::uint64_t& output) noexcept {
+    output = 0;
+    if (!local_account_access()) {
+        return false;
+    }
+    Transaction transaction;
+    if (!transaction.ready()) {
+        return false;
+    }
+    Statement owner("SELECT soid FROM account WHERE id=1");
+    std::uint64_t primary{};
+    if (owner.step() != SQLITE_ROW || !owner.column(0, primary) || primary == 0
+        || owner.step() != SQLITE_DONE) {
+        return false;
+    }
+    // Selection belongs to the process-local session; SQLite supplies only slot identities.
+    Statement rows("SELECT slot,soid FROM characters ORDER BY slot");
+    std::size_t count{};
+    std::uint64_t selected{};
+    int result = rows.step();
+    while (result == SQLITE_ROW) {
+        std::size_t slot{};
+        std::uint64_t character{};
+        if (!rows.columns(slot, character) || slot != count || slot >= kCharacterCapacity
+            || character == 0) {
+            return false;
+        }
+        if (g_session.selected[slot]) {
+            if (selected != 0) {
+                return false;
+            }
+            selected = character;
+        }
+        ++count;
+        result = rows.step();
+    }
+    if (result != SQLITE_DONE || !transaction.commit()) {
+        return false;
+    }
+    output = selected;
+    return true;
+}
 
 /** A read returns one complete account or an empty output on failure. */
 bool read_account(AccountState& output) noexcept {
@@ -154,6 +210,7 @@ bool write_account(const AccountState& value) noexcept {
         g_session.selected[index] = value.characters[index].selected;
         g_session.activities[index] = value.characters[index].currentActivityIndex;
     }
+    account::profiles::local_changed();
     return true;
 }
 
@@ -207,24 +264,30 @@ bool read_starter_items(std::uint8_t characterClass,
     return result == SQLITE_DONE;
 }
 
-/**
- * Drops one character's slot-keyed unlock and reward rows and moves later slots down one.
- * @param slot Character slot the removed character held.
- * @return True when every row moved in one transaction.
- */
+/** One INSERT copies the starter rows under the new slot. */
+bool seed_character_unlocks(std::size_t slot) noexcept {
+    const std::lock_guard lock(g_mutex);
+    Statement rows("INSERT INTO unlocks SELECT ?,bank,slot,lane,value FROM starter_unlocks");
+    return rows.write(slot);
+}
+
+/** Deletes and moves share one transaction, so a refusal leaves every row in place. */
 bool remove_character_rows(std::size_t slot) noexcept {
     Transaction transaction;
     Statement unlocks("DELETE FROM unlocks WHERE character_slot=?");
     Statement rewards("DELETE FROM pending_rewards WHERE character_slot=?");
+    Statement parked("DELETE FROM parked_items WHERE character_slot=?");
     if (!transaction.ready() || slot >= kCharacterCapacity || !unlocks.write(slot)
-        || !rewards.write(slot)) {
+        || !rewards.write(slot) || !parked.write(slot)) {
         return false;
     }
     Statement moveUnlocks("UPDATE unlocks SET character_slot=? WHERE character_slot=?");
     Statement moveRewards("UPDATE pending_rewards SET character_slot=? WHERE character_slot=?");
+    Statement moveParked("UPDATE parked_items SET character_slot=? WHERE character_slot=?");
     // Ascending, so every target slot is already empty and no key collides.
     for (std::size_t from = slot + 1; from < kCharacterCapacity; ++from) {
-        if (!moveUnlocks.write(from - 1, from) || !moveRewards.write(from - 1, from)) {
+        if (!moveUnlocks.write(from - 1, from) || !moveRewards.write(from - 1, from)
+            || !moveParked.write(from - 1, from)) {
             return false;
         }
     }
@@ -234,7 +297,14 @@ bool remove_character_rows(std::size_t slot) noexcept {
 /** A sign-in timestamp belongs only to the current connection lifetime. */
 void set_sign_in_time(std::uint64_t seconds) noexcept {
     const std::lock_guard lock(g_mutex);
+    if (!local_account_access()) {
+        return;
+    }
+    if (g_session.signInSeconds == seconds) {
+        return;
+    }
     g_session.signInSeconds = seconds;
+    account::profiles::local_changed();
 }
 
 } // namespace sunrise::state::investment::store

@@ -24,7 +24,7 @@ namespace {
     std::copy(existing.begin(), existing.end(), output.begin());
     std::size_t used = existing.size();
 
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::bound_account_snapshot();
     middleware::datagen::family4::loadout::ResolvedLoadout loadout{};
     if (!mutation.prepared || mutation.characterIndex >= account.characterCount
         || account.characters[mutation.characterIndex].soid != mutation.characterSoid
@@ -111,12 +111,11 @@ bool stage_service_outcome(Scratch& scratch,
     const auto presentationRows = preserveAcquisitionPresentation
                                       ? acquisitionPresentationRows
                                       : std::span<const AcquisitionPresentationRow>{};
-    // Set before the branch chain rather than inside the equipment arm. That arm returns early
-    // when the staged after-image fails validation, and the equip has already moved State by
-    // then -- so the published record is stale on exactly the path the arm never finishes.
+    // The member record carries the Triumph score, and the selected character's Power and emblem.
     publication.rearmsSocialRosterRepush =
-        equipment != nullptr && equipment->pending != nullptr
-        && moves_social_roster(equipment->pending->equipmentSlotIndex);
+        outcome.hasRecordClaim || outcome.selectionMoved
+        || (equipment != nullptr && equipment->pending != nullptr
+            && moves_social_roster(equipment->pending->equipmentSlotIndex));
     if (outcome.hasSubscription) {
         push::append_queuez_notification(scratch,
                                          before,
@@ -129,7 +128,7 @@ bool stage_service_outcome(Scratch& scratch,
                                          armsRepush,
                                          outcome.subscriptionAnswered);
         // The subscribe is the only moment a family-two root arrives. Recorded rather than acted
-        // on: the inline answer to this subscribe lands, so nothing is owed until an equip makes
+        // on: the inline answer to this subscribe lands, so nothing is owed until a change makes
         // what it published stale.
         if (outcome.subscription.familyType == kSocialRosterFamilyType) {
             socialRosterRoot = outcome.subscription.familyRootSoid;
@@ -139,6 +138,9 @@ bool stage_service_outcome(Scratch& scratch,
                              outcome.unsubscription.familyType,
                              outcome.unsubscription.familyRootSoid,
                              after);
+        if (outcome.unsubscription.familyType == kSocialRosterFamilyType) {
+            publication.socialRosterReleaseRoot = outcome.unsubscription.familyRootSoid;
+        }
     } else if (outcome.hasChangeCharacter) {
         // The reply already carries the version this patch promises. A patch that cannot be built
         // leaves the ladder where it is, instead of holding back that reply.
@@ -310,7 +312,7 @@ bool stage_service_outcome(Scratch& scratch,
         }
         middleware::secure_channel::advance_nonce(nonce);
         after = selection.after;
-        // Family zero and Family three no longer fit beside the enlarged upstream Family-four
+        // Family zero and Family three do not fit beside the enlarged upstream Family-four
         // selection notification in this bounded reply. Publish them through the already-proven
         // deferred refresh channel after the primary mutation commits.
         armsAbilityRefresh = true;
@@ -361,7 +363,7 @@ bool stage_service_outcome(Scratch& scratch,
             return false;
         }
     } else if (outcome.hasArtifactReset) {
-        const state::AccountState account = state::account_snapshot();
+        const state::AccountState account = state::bound_account_snapshot();
         std::uint64_t selectedCharacter = 0;
         for (std::size_t index = 0; index < account.characterCount; ++index) {
             if (account.characters[index].selected) {

@@ -3,10 +3,12 @@
  * Helpers here need the Host runtime lock; the entry points take it themselves.
  */
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -20,7 +22,7 @@ namespace sunrise::server::activity::host {
 namespace detail {
 
 SRWLOCK g_lock{SRWLOCK_INIT};
-std::array<Instance, kInstanceCapacity> g_instances{};
+std::array<std::unique_ptr<Instance>, kInstanceCapacity> g_instances{};
 std::vector<PendingInput> g_pending{};
 std::array<Event, kEventCapacity> g_events{};
 std::size_t g_pendingRead{};
@@ -49,7 +51,11 @@ std::uint64_t g_overwrittenEvents{};
 
 /** Finds one exact instance while the runtime lock is held. */
 [[nodiscard]] Instance* find_instance(const state::activity::SessionBinding& binding) noexcept {
-    for (Instance& instance : g_instances) {
+    for (auto& owned : g_instances) {
+        if (!owned) {
+            continue;
+        }
+        Instance& instance = *owned;
         if (instance.occupied && same_binding(instance.view.binding, binding)) {
             return &instance;
         }
@@ -137,13 +143,17 @@ bool append_pending(const PendingInput& pending) noexcept {
     return true;
 }
 
-/** Allocates one diagnostic instance without evicting a binding active in this service slice. */
+/** Reuses a safe inactive record before admitting a new lifetime-owned activity record. */
 [[nodiscard]] Instance* ensure_instance(const state::activity::SessionBinding& binding) noexcept {
     if (Instance* const current = find_instance(binding); current != nullptr) {
         return current;
     }
     Instance* selected = nullptr;
-    for (Instance& instance : g_instances) {
+    for (auto& owned : g_instances) {
+        if (!owned) {
+            continue;
+        }
+        Instance& instance = *owned;
         if (!instance.occupied) {
             selected = &instance;
             break;
@@ -154,10 +164,27 @@ bool append_pending(const PendingInput& pending) noexcept {
             selected = &instance;
         }
     }
-    if (selected == nullptr) {
-        return nullptr;
+    if (selected != nullptr) {
+        clear_instance(*selected);
+    } else {
+        for (auto& owned : g_instances) {
+            if (owned) {
+                continue;
+            }
+            owned.reset(new (std::nothrow) Instance{});
+            if (!owned) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::error,
+                                 "ev=activity stage=instance result=no_memory");
+                return nullptr;
+            }
+            selected = owned.get();
+            break;
+        }
+        if (selected == nullptr) {
+            return nullptr;
+        }
     }
-    clear_instance(*selected);
     selected->occupied = true;
     selected->view.binding = binding;
     selected->view.lifetimeState = kDefaultLifetimeState;
@@ -391,14 +418,17 @@ bool request_auth_state(const state::activity::SessionBinding& binding,
     return true;
 }
 
-/** Applies queued client and operator events on the server service slice. */
 void service(std::uint64_t now) noexcept {
     std::array<state::activity::SessionBinding, state::activity::kSessionCapacity> bindings{};
     std::size_t bindingCount = 0;
     static_cast<void>(state::activity::snapshot_retained_bindings(bindings, bindingCount));
 
     AcquireSRWLockExclusive(&g_lock);
-    for (Instance& instance : g_instances) {
+    for (auto& owned : g_instances) {
+        if (!owned) {
+            continue;
+        }
+        Instance& instance = *owned;
         bool active = false;
         for (std::size_t index = 0; index < bindingCount; ++index) {
             if (same_binding(instance.view.binding, bindings[index])) {
@@ -419,10 +449,13 @@ void service(std::uint64_t now) noexcept {
     }
     for (std::size_t index = 0; index < bindingCount; ++index) {
         Instance* const instance = ensure_instance(bindings[index]);
-        if (instance != nullptr) {
-            instance->view.active = true;
-            touch(*instance);
+        if (instance == nullptr) {
+            // Preserve accepted input and its ordering until every retained owner has storage.
+            ReleaseSRWLockExclusive(&g_lock);
+            return;
         }
+        instance->view.active = true;
+        touch(*instance);
     }
     while (g_pendingRead < g_pending.size()) {
         const PendingInput pending = g_pending[g_pendingRead];
@@ -463,9 +496,15 @@ void service(std::uint64_t now) noexcept {
 
 /** Copies the latest complete diagnostic view. */
 void snapshot(DiagnosticsSnapshot& output) noexcept {
-    output = {};
+    // The server-wide snapshot is too large for a temporary on a native game thread.
+    std::destroy_at(&output);
+    std::construct_at(&output);
     AcquireSRWLockShared(&g_lock);
-    for (const Instance& instance : g_instances) {
+    for (const auto& owned : g_instances) {
+        if (!owned) {
+            continue;
+        }
+        const Instance& instance = *owned;
         if (instance.occupied && output.instanceCount < output.instances.size()) {
             output.instances[output.instanceCount] = instance.view;
             ++output.instanceCount;
@@ -536,40 +575,86 @@ void read_events_after(EventCursor after, EventRead& output) noexcept {
     ReleaseSRWLockShared(&g_lock);
 }
 
-/** Reads the committed Auth state for one exact activity generation. */
-bool auth_state(const state::activity::SessionBinding& binding, AuthState& output) noexcept {
+namespace {
+
+/** @return True when one link refused the instance's current state revision. */
+[[nodiscard]] bool link_refused(const InstanceSnapshot& view, std::uint64_t generation) noexcept {
+    return generation != 0 && view.refusedStateRevision == view.stateRevision
+           && std::find(view.refusedLinks.begin(), view.refusedLinks.end(), generation)
+                  != view.refusedLinks.end();
+}
+
+/** Adds one link to the current revision's refusals; a new revision starts an empty set. */
+void record_link_refusal(InstanceSnapshot& view, std::uint64_t generation) noexcept {
+    if (view.refusedStateRevision != view.stateRevision) {
+        view.refusedLinks.fill(0);
+        view.refusedStateRevision = view.stateRevision;
+    }
+    const auto free = std::find(view.refusedLinks.begin(), view.refusedLinks.end(), 0U);
+    if (!link_refused(view, generation) && free != view.refusedLinks.end()) {
+        *free = generation;
+    }
+}
+
+} // namespace
+
+/** Reads the committed Auth state and the asking link's refusal of it. */
+bool auth_state(const state::activity::SessionBinding& binding,
+                std::uint64_t sourceGeneration,
+                AuthState& output) noexcept {
     output = {};
     AcquireSRWLockShared(&g_lock);
     const Instance* const instance = find_instance(binding);
     const bool found = instance != nullptr;
     if (found) {
         output.revision = instance->view.stateRevision;
+        output.estateRevision = instance->view.scriptableEstateRevision;
+        output.dialogueRevision = instance->view.dialogueRevision;
         output.lifetimeState = instance->view.lifetimeState;
+        output.refused = link_refused(instance->view, sourceGeneration);
     }
     ReleaseSRWLockShared(&g_lock);
     return found;
 }
 
-/** Records one refused BAP attempt without clearing the committed output. */
+/**
+ * Records one link's refused msg-5 body against the exact state revision it carried.
+ * @param binding Exact activity owning the revision.
+ * @param sourceGeneration ActivityClient generation that attempted the body.
+ * @param revision State revision the body carried, zero before the first commit.
+ * @param lifetimeState Lifetime state the body carried.
+ * @param status Refusal; a missing epoch is the only one the next attempt can clear.
+ * @param soleLink True when no other link can carry the revision, so the output slot is freed.
+ */
 void note_auth_attempt(const state::activity::SessionBinding& binding,
                        std::uint64_t sourceGeneration,
                        std::uint64_t revision,
                        std::uint8_t lifetimeState,
-                       OutputStatus status) noexcept {
-    if (revision == 0 || status == OutputStatus::idle || status == OutputStatus::pending
+                       OutputStatus status,
+                       bool soleLink) noexcept {
+    if (sourceGeneration == 0 || status == OutputStatus::idle || status == OutputStatus::pending
         || status == OutputStatus::transportStaged || status == OutputStatus::canceled) {
         return;
     }
+    const bool refused = status != OutputStatus::waitingForEpoch;
     AcquireSRWLockExclusive(&g_lock);
     Instance* const instance = find_instance(binding);
-    if (instance != nullptr && instance->view.outputPending
-        && instance->view.outputKind == OutputKind::authState
-        && instance->view.stateRevision == revision
+    if (instance != nullptr && instance->view.stateRevision == revision
         && instance->view.lifetimeState == lifetimeState) {
-        instance->view.lastOutputAttemptTick = GetTickCount64();
-        instance->view.lastOutputSourceGeneration = sourceGeneration;
-        ++instance->view.outputAttempts;
-        instance->view.outputStatus = status;
+        // A revision also advances without an output slot, so the refusal is kept on the revision.
+        if (refused) {
+            record_link_refusal(instance->view, sourceGeneration);
+        }
+        if (instance->view.outputPending && instance->view.outputKind == OutputKind::authState) {
+            const std::uint64_t now = GetTickCount64();
+            instance->view.lastOutputAttemptTick = now;
+            instance->view.lastOutputSourceGeneration = sourceGeneration;
+            ++instance->view.outputAttempts;
+            if (refused && soleLink) {
+                cancel_output(*instance, now);
+            }
+            instance->view.outputStatus = status;
+        }
     }
     ReleaseSRWLockExclusive(&g_lock);
 }
@@ -612,10 +697,11 @@ void note_auth_transport_staged(const state::activity::SessionBinding& binding,
 void reset() noexcept {
     AcquireSRWLockExclusive(&g_lock);
     g_eventGeneration = next_nonzero(g_eventGeneration);
-    for (Instance& instance : g_instances) {
-        clear_instance(instance);
+    for (auto& owned : g_instances) {
+        owned.reset();
     }
-    std::vector<PendingInput>{}.swap(g_pending);
+    // Reuse the queue storage; constructing an empty vector may allocate Debug bookkeeping.
+    g_pending.clear();
     for (Event& event : g_events) {
         event = {};
     }

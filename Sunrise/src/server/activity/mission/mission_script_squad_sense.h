@@ -6,13 +6,17 @@
 #include <span>
 
 #include "../../../middleware/bap/activity_message/sense_update.h"
+#include "../../../middleware/content/packages/schema/generated/tag_classes_80807e.h"
+#include "../../../middleware/content/packages/schema/generated/tag_classes_808094.h"
 
 namespace sunrise::server::activity::mission {
 
+namespace generated = middleware::content::packages::schema::generated;
+
 /** Type-1 squad Sense nested schemas: the created-count list, its counts, and the cost reals. */
-inline constexpr std::uint32_t kSquadCreatedListSchema = 0x80807ECFU;
-inline constexpr std::uint32_t kSquadCreatedCountSchema = 0x80809491U;
-inline constexpr std::uint32_t kSquadObjectiveCostSchema = 0x80807ECDU;
+inline constexpr std::uint32_t kSquadCreatedListSchema = generated::C80807ecf::kClass;
+inline constexpr std::uint32_t kSquadCreatedCountSchema = generated::C80809491::kClass;
+inline constexpr std::uint32_t kSquadObjectiveCostSchema = generated::C80807ecd::kClass;
 /** Root ordinals: field 1 echoes the objective revision, field 3 is the alive count. */
 inline constexpr std::uint16_t kSquadObjectiveRevisionOrdinal = 1;
 inline constexpr std::uint16_t kSquadAliveOrdinal = 3;
@@ -31,8 +35,10 @@ inline constexpr std::int64_t kMaximumCounter = 0x7FFFFFFF;
 
 /**
  * Reads the per-slot created counts. They never decrement and are zeroed on a generation change,
- * so a rise is a spawn.
- * @param output Receives one count per slot; slots past the list length read zero.
+ *
+ * so a rise after the first sighting is a spawn.
+ * @param output Receives one count per slot;
+ * slots past the list length read zero.
  * @return The list length, or zero when the list is absent or incomplete.
  */
 [[nodiscard]] inline std::uint8_t read_squad_created_counts(

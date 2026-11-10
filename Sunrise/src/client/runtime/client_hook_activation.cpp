@@ -12,22 +12,28 @@
 #include "../../core/ui/notice/ui_notice_overlay.h"
 #include "../../server/bap/runtime.h"
 #include "../activity/mission_launch.h"
+#include "../content/activity/activity_sdk_tagdefs_dump.h"
 #include "../content/activity/scriptable_catalog_worker.h"
 #include "../content/bootstrap/bootstrap_token_publish.h"
 #include "../content/investment/worker.h"
 #include "../content/items/packages/build.h"
 #include "../diagnostics/entity_create_probe.h"
+#include "../diagnostics/test_input/test_input.h"
 #include "../executable/image.h"
+#include "../hooks/account_registration/account_registration.h"
 #include "../hooks/assert_handler/assert_handler_lifecycle.h"
 #include "../hooks/async_io/async_io_lifetime_guard.h"
 #include "../hooks/bootflow/bootflow_hook_lifecycle.h"
 #include "../hooks/cine_probe/cine_probe.h"
 #include "../hooks/config_getter/config_getter_lifecycle.h"
 #include "../hooks/cursor/runtime.h"
+#include "../hooks/exception_probe/exception_probe.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
 #include "../hooks/hitch_probe/hitch_probe.h"
 #include "../hooks/inactivity/inactivity_override.h"
 #include "../hooks/infinite_ammo/infinite_ammo.h"
+#include "../hooks/instance_mutex/instance_mutex_release.h"
+#include "../hooks/machine_id/machine_id_override.h"
 #include "../hooks/network/runtime.h"
 #include "../hooks/no_damage/no_damage.h"
 #include "../hooks/noclip/runtime.h"
@@ -164,6 +170,35 @@ void clear_game_targets() noexcept {
         return false;
     }
 
+    if (core::settings::multiplayer()) {
+        const auto rollbackAdapters = []() noexcept {
+            // Each uninstall retains its native ownership when an in-flight call prevents removal.
+            bool removed = hooks::instance_mutex::uninstall();
+            removed = hooks::machine_id::uninstall() && removed;
+            removed = hooks::account_registration::uninstall() && removed;
+            if (!removed) {
+                core::log::write(core::log::Channel::client,
+                                 core::log::Level::warn,
+                                 "ev=activate stage=adapter_rollback result=pending");
+            }
+            // Game-network hooks still own their resolved targets until normal shutdown.
+        };
+        if (!hooks::account_registration::install()) {
+            core::log::write(core::log::Channel::client,
+                             core::log::Level::error,
+                             "ev=activate stage=account_registration result=fail");
+            rollbackAdapters();
+            return false;
+        }
+        if (!hooks::machine_id::install()) {
+            rollbackAdapters();
+            return false;
+        }
+        // A second game on one PC needs its own machine id, so only that setup frees the guard.
+        if (core::settings::get().client.machineId != 0) {
+            (void)hooks::instance_mutex::install();
+        }
+    }
     core::log::write(core::log::Channel::client,
                      core::log::Level::info,
                      "ev=activate stage=game_network result=ok");
@@ -173,6 +208,7 @@ void clear_game_targets() noexcept {
                      packageKeys ? "ev=activate stage=package_keys result=ok"
                                  : "ev=activate stage=package_keys result=fail");
     content::items::packages::export_keys_if_requested();
+    content::activity::sdk_generation::decode_plans::export_tagdefs_if_requested();
     // Stocks the client's entity free-slot bitmap, which this host leaves entirely unstocked.
     // The hook covers only the index allocator, whose two-argument shape was read out of its own
     // body. The initialiser beside it is left alone: its fifth argument is passed on the stack,
@@ -187,6 +223,9 @@ void clear_game_targets() noexcept {
     // Read-only. Some freezes silence the watchdog too; this watcher dumps every thread's rip
     // and stack from its own thread when the game stops calling the pump.
     (void)hooks::stall_probe::install();
+    // Read-only. Logs Sunrise throws and faults, and game access violations, which the game's
+    // crash handler would otherwise swallow.
+    (void)hooks::exception_probe::install();
     // The stock async-I/O wrapper reloads its singleton after pumping it and can observe the
     // legitimate teardown/recreate null window. This optional guard keeps the owner it pumped.
     (void)hooks::async_io::install();
@@ -299,6 +338,8 @@ bool activate_graphics_once() noexcept {
     // The game reads its action keys by scanning GetKeyState every frame, which no window
     // procedure sees, so the polled guards carry the same terms as the cursor guards.
     (void)hooks::polled_input::install();
+    // A test process reports the game window in front, so a background run takes held keys.
+    (void)diagnostics::test_input::install();
     core::log::write(
         core::log::Channel::client, core::log::Level::info, "ev=activate stage=graphics result=ok");
     ReleaseSRWLockExclusive(&runtime::g_lock);

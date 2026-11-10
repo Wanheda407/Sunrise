@@ -5,14 +5,18 @@
 #include <cstdint>
 #include <span>
 
+#include "../../content/packages/schema/generated/tag_classes_808062.h"
 #include "../../encoding/bit_writer.h"
 #include "activity_patch_epoch_parser.h"
 #include "definition.h"
+#include "scoreboard_record.h"
 #include "sensor_message.h"
 #include "squad_auth_body.h"
 #include "squad_sense_state.h"
 
 namespace sunrise::middleware::bap::activity_message::sensor_auth_update {
+
+namespace generated = middleware::content::packages::schema::generated;
 
 /** The client roster and its bubble grants both use activity message type 5. */
 inline constexpr std::uint32_t kMessageType = 5;
@@ -35,9 +39,9 @@ inline constexpr std::size_t kClientGroupCapacity = 128;
 inline constexpr std::size_t kClientRecordCapacity = 3072;
 /** Exact auth bodies one snapshot accepts, bounded by the widest authored roster object. */
 inline constexpr std::size_t kAuthOverrideCapacity = 1280;
-/** Authored scene sensors are slot type 43 and consume reflection schema 0x8080626B. */
+/** Slot type and Auth schema of an authored scene sensor. */
 inline constexpr std::uint8_t kAuthoredSceneSlotType = 43;
-inline constexpr std::uint32_t kAuthoredSceneAuthSchema = 0x8080626B;
+inline constexpr std::uint32_t kAuthoredSceneAuthSchema = generated::C8080626b::kClass;
 /** Fixed fields plus bounded dependency references and event keys in the complete Auth schema. */
 inline constexpr std::size_t kAuthoredSceneBaseAuthBitCount = 74;
 inline constexpr std::size_t kAuthoredSceneDependencyBitCount = 55;
@@ -193,11 +197,22 @@ struct Roster final {
     std::span<const BubbleSubBlock> bubbleSubBlocks{};
 };
 
+/** A joined character assigned to an actual registered participation slot. */
+struct ParticipationSeat final {
+    std::uint64_t playerKey{};
+    std::uint16_t slotIndex{};
+};
+
 /** Everything one `sensor_auth_update` carries. */
 struct Snapshot final {
     /** Message 52's payload, echoed exactly. A wrong epoch skips phase 2 and reports nothing. */
     patch_epoch::PatchEpoch patchEpoch{};
     Roster roster{};
+    std::array<ParticipationSeat, scoreboard_record::kElementCount> participationSeats{};
+    std::size_t participationSeatCount{};
+    scoreboard_record::Record scoreboard{};
+    bool perMemberParticipation{};
+    bool hasScoreboard{};
     /** Exact typed bodies for slots already present in `roster`. */
     std::span<const AuthOverride> authOverrides{};
     std::span<const SenseOverride> senseOverrides{};
@@ -400,7 +415,8 @@ auth_body_bits(const Snapshot& snapshot, std::uint8_t slotType, bool carriesPlay
 [[nodiscard]] bool write_auth_body(encoding::bits::Writer& writer,
                                    const Snapshot& snapshot,
                                    std::uint8_t slotType,
-                                   bool carriesPlayerKey) noexcept;
+                                   bool carriesPlayerKey,
+                                   std::uint64_t playerKey = 0) noexcept;
 
 /**
  * Writes one per-object state block.
@@ -425,6 +441,7 @@ auth_body_bits(const Snapshot& snapshot, std::uint8_t slotType, bool carriesPlay
                                       std::uint16_t slotIndex,
                                       std::uint8_t flags,
                                       bool missionSeedOnly,
-                                      bool carriesPlayerKey) noexcept;
+                                      bool carriesPlayerKey,
+                                      std::uint64_t playerKey = 0) noexcept;
 
 } // namespace sunrise::middleware::bap::activity_message::sensor_auth_update

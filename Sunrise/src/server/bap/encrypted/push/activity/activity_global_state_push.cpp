@@ -24,6 +24,11 @@ namespace {
 /** The byte a bubble carries when its first slice-set state is enabled. */
 constexpr std::uint8_t kBubbleEnabledByte = 0x80;
 
+// Message 1 carries exactly 64 bubble bytes, so no bubble table may be wider.
+static_assert(::sunrise::state::build_data::scenarios::kBubbleCapacity
+              == message::kBubbleStateCount);
+static_assert(::sunrise::state::activity::defaults::kBubbleCapacity == message::kBubbleStateCount);
+
 /**
  * Copies one destination name into the fixed message field.
  * @param selection Destination carrying the package name.
@@ -92,12 +97,20 @@ resolve_state(const state::activity::SessionBinding& binding,
         std::copy(
             layout.bubbleStates.begin(), layout.bubbleStates.end(), output.bubbleStates.begin());
         output.hasSliceSet = true;
-        output.sliceSetIndex = arrival_slice_set(
-            defaults.defaultDestination,
-            selection,
-            name,
-            layout,
-            state::activity::membership::declared_initial_region(binding.sessionId));
+        std::uint16_t arrival{};
+        if (!session_arrival_slice_set(
+                binding,
+                layout,
+                arrival_slice_set(
+                    defaults.defaultDestination,
+                    selection,
+                    name,
+                    layout,
+                    state::activity::membership::declared_initial_region(binding.sessionId)),
+                arrival)) {
+            return false;
+        }
+        output.sliceSetIndex = arrival;
         return true;
     }
     output.bubbleCount = fallback.bubbleCount;
@@ -107,7 +120,11 @@ resolve_state(const state::activity::SessionBinding& binding,
     }
     output.hasSliceSet = true;
     // No layout means no bubble array to derive an arrival from, so the authored index stands.
-    output.sliceSetIndex = fallback.initialSliceSet;
+    std::uint16_t arrival{};
+    if (!session_arrival_slice_set(binding, layout, fallback.initialSliceSet, arrival)) {
+        return false;
+    }
+    output.sliceSetIndex = arrival;
     return true;
 }
 

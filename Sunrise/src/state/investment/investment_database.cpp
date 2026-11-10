@@ -1,11 +1,63 @@
+#include "../account/account_context.h"
 #include "store_internal.h"
 
 namespace sunrise::state::investment::store {
 
 sqlite3* g_database{};
+// Transactions hold this across nested store/statement operations, so the lock must be recursive.
 std::recursive_mutex g_mutex;
 Session g_session;
 std::uint64_t g_failureSerial{};
+
+/**
+ * Rows whose definition the installed content lacks. A new save and the version 5 migration both
+ * create the table from this text, so the two cannot differ.
+ */
+constexpr const char* kParkedItemsTable =
+    "CREATE TABLE parked_items ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "kind INTEGER NOT NULL CHECK (kind IN (0, 1, 2)),"
+    "character_slot INTEGER NOT NULL CHECK (character_slot BETWEEN -1 AND 2),"
+    "location INTEGER NOT NULL CHECK (location IN (0, 1)),"
+    "position INTEGER NOT NULL CHECK (position >= 0),"
+    "instance_soid INTEGER NOT NULL,"
+    "definition_hash INTEGER NOT NULL CHECK (definition_hash BETWEEN 1 AND 4294967295),"
+    "level INTEGER NOT NULL,"
+    "quantity INTEGER NOT NULL CHECK (quantity > 0),"
+    "mutation_serial INTEGER NOT NULL CHECK (mutation_serial >= 0),"
+    "flags INTEGER NOT NULL,"
+    "socket_policy INTEGER NOT NULL CHECK (socket_policy IN (0, 1)),"
+    "plug_count INTEGER NOT NULL CHECK (plug_count BETWEEN 0 AND 12),"
+    "plugs BLOB NOT NULL CHECK (length(plugs) = 48),"
+    "movement_ability INTEGER NOT NULL,"
+    "grenade_ability INTEGER NOT NULL,"
+    "super_ability INTEGER NOT NULL,"
+    "melee_ability INTEGER NOT NULL,"
+    "class_ability INTEGER NOT NULL,"
+    "seen INTEGER NOT NULL CHECK (seen IN (0, 1))"
+    ") STRICT;";
+
+namespace {
+
+/** Newest save schema; open() upgrades an older save one version at a time. */
+constexpr int kSchemaVersion = 5;
+/** Application id every Sunrise save carries; the bundled schema sets it. */
+constexpr int kApplicationId = 1397902921;
+
+/**
+ * Reads the open save's stamp.
+ * @param version Receives the save's schema version.
+ * @return False when the save is not ours or the stamp does not read.
+ */
+[[nodiscard]] bool read_stamp(int& version) noexcept {
+    int application = 0;
+    Statement id("PRAGMA application_id");
+    Statement user("PRAGMA user_version");
+    return id.step() == SQLITE_ROW && id.column(0, application) && application == kApplicationId
+           && user.step() == SQLITE_ROW && user.column(0, version);
+}
+
+} // namespace
 
 /** SQLite requires this sentinel to copy text borrowed from a caller. */
 sqlite3_destructor_type copy_text() noexcept {
@@ -14,7 +66,7 @@ sqlite3_destructor_type copy_text() noexcept {
 
 /** SQL failures remain failures; no in-memory save replaces a failed disk write. */
 bool execute(const char* sql) noexcept {
-    const bool ready = g_database != nullptr
+    const bool ready = local_account_access() && g_database != nullptr
                        && sqlite3_exec(g_database, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
     if (!ready) {
         ++g_failureSerial;
@@ -47,6 +99,10 @@ bool Transaction::commit() noexcept {
 
 /** The caller holds the database lock until this statement is destroyed. */
 Statement::Statement(const char* sql) noexcept {
+    if (!local_account_access()) {
+        ++g_failureSerial;
+        return;
+    }
     if (g_database != nullptr
         && sqlite3_prepare_v2(g_database, sql, -1, &statement_, nullptr) != SQLITE_OK) {
         sqlite3_finalize(statement_);
@@ -59,7 +115,8 @@ Statement::~Statement() {
     sqlite3_finalize(statement_);
 }
 int Statement::step() noexcept {
-    const int result = statement_ != nullptr ? sqlite3_step(statement_) : SQLITE_ERROR;
+    const int result =
+        local_account_access() && statement_ != nullptr ? sqlite3_step(statement_) : SQLITE_ERROR;
     if (result != SQLITE_ROW && result != SQLITE_DONE) {
         ++g_failureSerial;
     }
@@ -68,7 +125,8 @@ int Statement::step() noexcept {
 
 /** @return Borrowed text valid until the statement advances. */
 bool Statement::text(int column, std::string_view& value) const noexcept {
-    if (statement_ == nullptr || sqlite3_column_type(statement_, column) != SQLITE_TEXT) {
+    if (!local_account_access() || statement_ == nullptr
+        || sqlite3_column_type(statement_, column) != SQLITE_TEXT) {
         return false;
     }
     const auto* bytes = reinterpret_cast<const char*>(sqlite3_column_text(statement_, column));
@@ -97,7 +155,7 @@ bool open(std::string_view path,
           std::string_view settingsDefaults,
           std::string_view characterStarter) noexcept {
     const std::lock_guard lock(g_mutex);
-    if (g_database != nullptr) {
+    if (!local_account_access() || g_database != nullptr) {
         return false;
     }
     const std::string filename(path);
@@ -125,22 +183,19 @@ bool open(std::string_view path,
         Transaction transaction;
         const std::string schemaText(schema);
         const std::string defaultText(defaults);
+        // The default characters copy the starter unlock rows, so the starter tables come first.
         ready = transaction.ready() && !schema.empty() && !defaults.empty()
-                && execute(schemaText.c_str()) && execute(defaultText.c_str())
-                && !settingsSchema.empty() && !settingsDefaults.empty()
-                && execute(preferenceSchema.c_str()) && execute(preferenceDefaults.c_str())
-                && !characterStarter.empty() && execute(starterText.c_str())
-                && transaction.commit();
+                && !characterStarter.empty() && execute(schemaText.c_str())
+                && execute(kParkedItemsTable) && execute(starterText.c_str())
+                && execute(defaultText.c_str()) && !settingsSchema.empty()
+                && !settingsDefaults.empty() && execute(preferenceSchema.c_str())
+                && execute(preferenceDefaults.c_str()) && transaction.commit();
+        // The bundled schema stamps the save; it must name the version this build writes.
+        int created = 0;
+        ready = ready && read_stamp(created) && created == kSchemaVersion;
     } else if (ready) {
-        // Version 3 adds the appearance header and the starter tables. Version 2 added account
-        // preferences and per-item seen state.
-        constexpr int kSchemaVersion = 3;
-        constexpr int kApplicationId = 1397902921;
-        int application = 0;
-        Statement query("PRAGMA application_id");
-        ready = (version == 1 || version == 2 || version == kSchemaVersion)
-                && query.step() == SQLITE_ROW && query.column(0, application)
-                && application == kApplicationId;
+        int stamped = 0;
+        ready = version >= 1 && version <= kSchemaVersion && read_stamp(stamped);
     }
     if (ready && version == 1) {
         Transaction transaction;
@@ -158,16 +213,38 @@ bool open(std::string_view path,
     }
     if (ready && version == 2) {
         Transaction transaction;
-        // Older characters keep the fixed default header: their zero blob is marked invalid.
         // ADD COLUMN refuses a function default such as zeroblob(), so the blob is a literal.
-        ready = transaction.ready() && !characterStarter.empty()
+        ready = transaction.ready()
                 && execute("ALTER TABLE characters ADD COLUMN appearance_header BLOB NOT NULL "
                            "DEFAULT (X'000000000000000000000000000000000000000000000000000000000000"
                            "000000000000') CHECK (length(appearance_header) = 36);"
                            "ALTER TABLE characters ADD COLUMN appearance_header_valid INTEGER "
                            "NOT NULL DEFAULT 0 CHECK (appearance_header_valid IN (0, 1));")
-                && execute(starterText.c_str()) && execute("PRAGMA user_version=3")
-                && transaction.commit();
+                && execute("PRAGMA user_version=3") && transaction.commit();
+        if (ready) {
+            version = 3;
+        }
+    }
+    if (ready && version == 3) {
+        Transaction transaction;
+        // A character saved without a captured header gets the default characters' header. The
+        // starter SQL is idempotent, so it adds only the tables an older save lacks.
+        ready =
+            transaction.ready() && !characterStarter.empty()
+            && execute("UPDATE characters SET appearance_header=X'250005000100EA0201034602480349"
+                       "034A03FFFFFFFF1303C7020000C59D1C8101000000' WHERE "
+                       "appearance_header_valid=0;"
+                       "ALTER TABLE characters DROP COLUMN appearance_header_valid;")
+            && execute(starterText.c_str()) && execute("PRAGMA user_version=4")
+            && transaction.commit();
+        if (ready) {
+            version = 4;
+        }
+    }
+    if (ready && version == 4) {
+        Transaction transaction;
+        ready = transaction.ready() && execute(kParkedItemsTable)
+                && execute("PRAGMA user_version=5") && transaction.commit();
     }
     if (!ready) {
         shutdown();
@@ -220,6 +297,7 @@ bool use_session_copy() noexcept {
 /** Saves are synchronous, so shutdown only closes the handle and discards session fields. */
 void shutdown() noexcept {
     const std::lock_guard lock(g_mutex);
+    // This process owns the database even when teardown runs under a public request scope.
     sqlite3_close_v2(g_database);
     g_database = nullptr;
     g_session = {};

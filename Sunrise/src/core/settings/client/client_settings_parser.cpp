@@ -1,9 +1,11 @@
+#include <limits>
+
 #include "../parser.h"
 
 namespace sunrise::core::settings::parser {
 
 /** Parses Client-owned configuration over deterministic defaults. */
-bool Parser::client_settings(client::Settings& output) noexcept {
+bool Parser::client_settings(client::Settings& output, bool& endpointConfigured) noexcept {
     if (!consume('{')) {
         return false;
     }
@@ -14,7 +16,9 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasSocketMenuRouting = false;
     bool hasRevealLoreBooks = false;
     bool hasCheats = false;
-    bool hasDumpPackageKeys = false;
+    bool hasServerEndpoint = false;
+    bool hasMachineId = false;
+    bool hasExports = false;
     if (consume('}')) {
         return true;
     }
@@ -23,7 +27,20 @@ bool Parser::client_settings(client::Settings& output) noexcept {
         if (!string(key) || !consume(':')) {
             return false;
         }
-        if (key == "ui") {
+        if (key == "server_endpoint") {
+            auto& endpoint = candidate.serverEndpoint;
+            if (hasServerEndpoint
+                || !bap_endpoint(endpoint.host, endpoint.address, endpoint.bapPort)) {
+                return false;
+            }
+            hasServerEndpoint = true;
+        } else if (key == "machine_id") {
+            if (hasMachineId || !unsigned_integer(candidate.machineId)
+                || candidate.machineId == (std::numeric_limits<std::uint64_t>::max)()) {
+                return false;
+            }
+            hasMachineId = true;
+        } else if (key == "ui") {
             if (hasUserInterface || !client_ui_settings(candidate.userInterface)) {
                 return false;
             }
@@ -53,11 +70,52 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasCheats = true;
-        } else if (key == "dump_package_keys") {
-            if (hasDumpPackageKeys || !boolean(candidate.dumpPackageKeys)) {
+        } else if (key == "exports") {
+            if (hasExports || !client_exports_settings(candidate.exports)) {
                 return false;
             }
-            hasDumpPackageKeys = true;
+            hasExports = true;
+        } else if (!skip_value(0)) {
+            return false;
+        }
+        if (consume('}')) {
+            output = candidate;
+            endpointConfigured = hasServerEndpoint;
+            return true;
+        }
+        if (!consume(',')) {
+            return false;
+        }
+    }
+}
+
+/** Parses the startup export switches. Each key may appear once and must be boolean. */
+bool Parser::client_exports_settings(client::Exports& output) noexcept {
+    if (!consume('{')) {
+        return false;
+    }
+    client::Exports candidate{};
+    if (consume('}')) {
+        output = candidate;
+        return true;
+    }
+    bool hasPackageKeys = false;
+    bool hasTagDefinitions = false;
+    for (;;) {
+        std::string_view key;
+        if (!string(key) || !consume(':')) {
+            return false;
+        }
+        if (key == "package_keys") {
+            if (hasPackageKeys || !boolean(candidate.packageKeys)) {
+                return false;
+            }
+            hasPackageKeys = true;
+        } else if (key == "tag_definitions") {
+            if (hasTagDefinitions || !boolean(candidate.tagDefinitions)) {
+                return false;
+            }
+            hasTagDefinitions = true;
         } else if (!skip_value(0)) {
             return false;
         }

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "account_presence.h"
 #include "inventory/inventory_state.h"
 #include "settings/settings_state.h"
 
@@ -173,16 +174,15 @@ struct CharacterState {
     account::inventory::CharacterStacks stacks;
     /** Next row generation; equip transactions consume two values for the two moved items. */
     std::uint32_t nextInventorySerial{};
-    /** Authored appearance header captured at creation. Meaningless without its own `race`. */
+    /** Appearance header the save holds for this character. It fits only its own `race`. */
     AppearanceHeader appearanceHeader{};
-    /** False for a character predating appearance capture; both encoders fall back to the
-     * fixed default header when this is unset. */
-    bool appearanceHeaderValid{};
 };
 
 /** Call-local account snapshot shared by backend object families. */
 struct AccountState {
     std::uint64_t primarySoid{};
+    /** Public identity supplied by the local platform adapter or the owning peer's projection. */
+    AccountPresence presence{};
     /** Economy rows come from the investment store. */
     std::array<DismantleRewardPolicy, kDismantleRewardPolicyCapacity> dismantleRewards{};
     std::size_t dismantleRewardCount{};
@@ -200,6 +200,9 @@ struct AccountState {
 namespace account {
 
 [[nodiscard]] bool valid(const AccountState& state) noexcept;
+
+/** Validates public character data without requiring another account's private preferences. */
+[[nodiscard]] bool valid_public(const AccountState& state) noexcept;
 
 [[nodiscard]] std::uint64_t selected_character_soid(const AccountState& state) noexcept;
 
