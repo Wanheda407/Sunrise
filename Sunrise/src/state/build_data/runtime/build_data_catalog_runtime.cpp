@@ -4,15 +4,19 @@
 #include "../abilities/ability_bucket_catalog.h"
 #include "../bounties/bounty_catalog.h"
 #include "../collectibles/collectible_catalog.h"
+#include "../combat/combat_catalog.h"
 #include "../constants/investment_constant_catalog.h"
 #include "../hash_names/hash_name_catalog.h"
 #include "../inventory/buckets/inventory_bucket_catalog.h"
 #include "../items/catalysts/exotic_catalyst_catalog.h"
 #include "../items/details/item_detail_catalog.h"
+#include "../items/insertion_rules/insertion_rule_catalog.h"
 #include "../items/socket_plugs/socket_plug_catalog.h"
 #include "../material_requirements/material_requirement_catalog.h"
 #include "../nodes/node_catalog.h"
+#include "../objectives/objective_catalog.h"
 #include "../progressions/progression_catalog.h"
+#include "../pursuits/pursuit_catalog.h"
 #include "../records/record_catalog.h"
 #include "../rewards/reward_catalog.h"
 #include "../runtime.h"
@@ -23,6 +27,7 @@
 #include "../socket_entry_lists/socket_entry_list_catalog.h"
 #include "../spawn_sets/spawn_set_catalog.h"
 #include "../starter_sets/starter_set_catalog.h"
+#include "../vendors/reputation_turn_in_catalog.h"
 #include "../vendors/vendor_catalog.h"
 #include "domain_markers.h"
 #include "persistence/publication_transaction.h"
@@ -128,6 +133,13 @@ bool publish_progression_definitions(std::span<const progressions::Definition> d
     runtime::persistence::Transaction transaction;
     return transaction.active()
            && transaction.finish(progressions::replace(definitions, steps), progressions::clear);
+}
+
+/** Finds one progression by its definition hash, once the whole table is in State. */
+bool find_progression_definition_hash(std::uint32_t definitionHash,
+                                      progressions::Definition& definition) noexcept {
+    definition = {};
+    return progression_definitions_ready() && progressions::find(definitionHash, definition);
 }
 
 /** Reads what each rank of one progression costs, in rank order. */
@@ -349,11 +361,37 @@ bool vendor_catalog_ready() noexcept {
 bool publish_vendor_catalog(std::span<const vendors::IndexEntry> index,
                             std::span<const vendors::Definition> definitions,
                             std::span<const vendors::SaleRow> saleRows,
-                            std::span<const vendors::InstalledRow> installedRows) noexcept {
+                            std::span<const vendors::InstalledRow> installedRows,
+                            std::span<const vendors::TransferRule> transferRules) noexcept {
     runtime::persistence::Transaction transaction;
     return transaction.active()
-           && transaction.finish(vendors::replace(index, definitions, saleRows, installedRows),
-                                 vendors::clear);
+           && transaction.finish(
+               vendors::replace(index, definitions, saleRows, installedRows, transferRules),
+               vendors::clear);
+}
+
+/** Finds where one vendor transfers an item held in one source bucket. */
+bool find_vendor_transfer_destination(std::uint16_t vendorIndex,
+                                      std::uint8_t sourceBucket,
+                                      std::uint8_t& destination) noexcept {
+    destination = 0;
+    vendors::IndexEntry entry{};
+    vendors::Definition definition{};
+    if (!vendors::find_index(vendorIndex, entry) || !vendors::find(entry.definitionHash, definition)
+        || definition.index != vendorIndex || definition.definitionTag != entry.definitionTag) {
+        return false;
+    }
+    for (std::size_t row = 0; row < definition.transferRuleCount; ++row) {
+        vendors::TransferRule rule{};
+        if (!vendors::transfer_rule(definition, row, rule)) {
+            return false;
+        }
+        if (rule.sourceBucket == sourceBucket) {
+            destination = rule.destinationBucket;
+            return true;
+        }
+    }
+    return false;
 }
 
 namespace runtime {
@@ -375,6 +413,8 @@ void clear_catalogs() noexcept {
     progressions::clear();
     season_pass::clear();
     rewards::clear();
+    pursuits::clear();
+    objectives::clear();
     bounties::clear();
     records::clear();
     nodes::clear();
@@ -383,8 +423,11 @@ void clear_catalogs() noexcept {
     rollback_spawn_catalog_publication();
     rollback_name_catalog_publication();
     vendors::clear();
+    vendors::clear_reputation_turn_ins();
     constants::clear();
     starter_sets::clear();
+    items::insertion_rules::clear();
+    combat::clear();
 }
 
 } // namespace runtime

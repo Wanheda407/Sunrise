@@ -30,6 +30,14 @@ void clear() noexcept;
                            std::span<const Step> steps) noexcept;
 
 /**
+ * Reads one definition by its native index.
+ * @param definitionIndex Native progression definition index.
+ * @param definition Receives the definition on success.
+ * @return False when the catalog does not hold the index.
+ */
+[[nodiscard]] bool find(std::uint16_t definitionIndex, Definition& definition) noexcept;
+
+/**
  * Copies the rank steps one progression declares, in rank order.
  * @param definitionIndex Native progression definition index.
  * @param output Caller-owned fixed row storage.
@@ -38,6 +46,14 @@ void clear() noexcept;
  */
 [[nodiscard]] bool
 steps(std::uint16_t definitionIndex, std::span<Step> output, std::size_t& count) noexcept;
+
+/**
+ * Finds one progression by its definition hash.
+ * @param definitionHash Native progression definition hash.
+ * @param output Receives the row; reset when no row carries the hash.
+ * @return True when the domain holds a row with that hash.
+ */
+[[nodiscard]] bool find(std::uint32_t definitionHash, Definition& output) noexcept;
 
 /**
  * Copies the whole flat step bank.

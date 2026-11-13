@@ -222,7 +222,8 @@ lua_source(const state::activity_sdk::identity::Expected& identity,
             storage.combatObjectiveGroups,
             storage.actorAbilities,
             storage.authoredSceneEventKeys,
-            storage.dialogueCues};
+            storage.dialogueCues,
+            storage.incidentDefinitions};
 }
 
 } // namespace
@@ -367,6 +368,8 @@ const char* status_name(Status value) noexcept {
         return "dialogue_cues";
     case Status::authoredText:
         return "authored_text";
+    case Status::incidents:
+        return "incidents";
     case Status::behaviors:
         return "behaviors";
     case Status::policyInputs:
@@ -391,6 +394,7 @@ const char* status_name(Status value) noexcept {
 Status stage(const wchar_t* sdkDirectory,
              const wchar_t* packPath,
              const reader::Source& source,
+             const decode_plans::Image& reflectionImage,
              const pack::Digest& sourceFingerprint,
              const activity_inventory::Snapshot& activities,
              topology_inventory::Snapshot& topology,
@@ -456,6 +460,7 @@ Status stage(const wchar_t* sdkDirectory,
         installedRsats.erase(std::unique(installedRsats.begin(), installedRsats.end()),
                              installedRsats.end());
         if (!actor_rsat::build_with_rsats(source,
+                                          reflectionImage,
                                           squadFacts.actorDefinitionTags,
                                           installedRsats,
                                           cancel,
@@ -506,6 +511,12 @@ Status stage(const wchar_t* sdkDirectory,
             return Status::cancelled;
         }
 
+        report(progress, progressContext, Phase::incidents);
+        incident_inventory::Snapshot incidentRows{};
+        if (!build_incident_definitions(packageContext, incidentRows)) {
+            return cancelled(cancel, cancelContext) ? Status::cancelled : Status::incidents;
+        }
+
         report(progress, progressContext, Phase::behaviors);
         behaviors::Snapshot behaviorRows{};
         if (!behaviors::build(
@@ -536,7 +547,8 @@ Status stage(const wchar_t* sdkDirectory,
                                       &squadFacts,
                                       &squadRows,
                                       &sceneRows,
-                                      &behaviorRows};
+                                      &behaviorRows,
+                                      &incidentRows};
         composer::Storage storage{};
         if (!composer::compose_generated(inputs, storage)) {
             return Status::composition;

@@ -271,6 +271,16 @@ bool commit(ServiceOutcome& outcome, Publication& publication, const char*& reas
                                    : "ev=ws701 stage=transaction_commit result=fail");
         return committed;
     }
+    if (auto* transaction = transaction_if<PostmasterClaimTransaction>(outcome)) {
+        reason = "postmaster_claim";
+        const bool committed =
+            transaction->pending && state::commit_postmaster_claim(*transaction->pending);
+        core::log::write(core::log::Channel::server,
+                         committed ? core::log::Level::debug : core::log::Level::warn,
+                         committed ? "ev=ws405 stage=transaction_commit result=ok"
+                                   : "ev=ws405 stage=transaction_commit result=fail");
+        return committed;
+    }
     if (auto* transaction = transaction_if<EquipmentSwapTransaction>(outcome)) {
         if (transaction->pending == nullptr) {
             return false;
@@ -334,6 +344,12 @@ bool commit(ServiceOutcome& outcome, Publication& publication, const char*& reas
         reason = "item_state";
         return committed;
     }
+    if (state::PendingVendorReputation* reputation =
+            transaction_if<state::PendingVendorReputation>(outcome)) {
+        reason = "vendor_reputation";
+        return report_commit(state::commit_vendor_reputation(*reputation),
+                             "ev=vendor_reputation stage=transaction_commit result=fail");
+    }
     if (auto* transaction = transaction_if<ProfileItemAcquisitionTransaction>(outcome)) {
         const bool committed = transaction->pending != nullptr
                                && state::commit_profile_item_acquisition(*transaction->pending);
@@ -368,9 +384,19 @@ bool commit(ServiceOutcome& outcome, Publication& publication, const char*& reas
     }
     if (auto* transaction = transaction_if<RecordRewardGrantTransaction>(outcome)) {
         reason = "record_reward";
-        return transaction->pending != nullptr
-               && report_commit(state::commit_record_reward(*transaction->pending),
-                                "ev=record_reward stage=transaction_commit result=fail");
+        if (transaction->pending == nullptr) {
+            return false;
+        }
+        // The grant's staged frame already carries its XP total, so only the roster can be owed.
+        bool artifactBonusMoved = false;
+        if (!report_commit(state::commit_record_reward(*transaction->pending, &artifactBonusMoved),
+                           "ev=record_reward stage=transaction_commit result=fail")) {
+            return false;
+        }
+        if (artifactBonusMoved) {
+            bap::arm_social_roster_repush_everywhere();
+        }
+        return true;
     }
     return true;
 }

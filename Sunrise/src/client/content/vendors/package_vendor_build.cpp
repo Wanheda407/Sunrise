@@ -11,6 +11,7 @@
 #include "../../../middleware/content/packages/tables/definition_index_table.h"
 #include "../../../state/build_data/runtime.h"
 #include "../../../state/build_data/vendors/definition.h"
+#include "../items/packages/package_reward_build.h"
 #include "layout.h"
 #include "vendor_build.h"
 
@@ -22,39 +23,55 @@ namespace tables = middleware::content::packages::tables;
 namespace domain = state::build_data::vendors;
 namespace generated = middleware::content::packages::schema::generated;
 
-/** Every extracted row, kept off the caller stack. */
-struct Storage {
-    std::vector<std::byte> blob{};
-    std::array<domain::IndexEntry, domain::kIndexCapacity> index{};
-    std::array<domain::Definition, domain::kDefinitionCapacity> definitions{};
-    std::array<domain::SaleRow, domain::kSaleRowCapacity> saleRows{};
-    std::array<domain::InstalledRow, domain::kInstalledRowCapacity> installedRows{};
-    std::size_t indexCount{};
-    std::size_t definitionCount{};
-    std::size_t saleRowCount{};
-    std::size_t installedRowCount{};
-    /** Sale rows whose price depends on an expression, kept but never charged. */
-    std::size_t conditionalRows{};
-    /** Sale rows whose cost array did not read, kept but never charged. */
-    std::size_t unreadableRows{};
-
-    /** Only published prefixes are visible; extraction fully assigns each new row. */
-    void reset() noexcept {
-        blob.clear();
-        indexCount = 0;
-        definitionCount = 0;
-        saleRowCount = 0;
-        installedRowCount = 0;
-        conditionalRows = 0;
-        unreadableRows = 0;
-    }
-};
-
 /** One array a definition or a sale row declares, reduced to what the catalog stores. */
 struct ArrayView {
     std::uint32_t base{};
     std::uint32_t classId{};
     std::uint16_t count{};
+};
+
+/** Every extracted row, kept off the caller stack. */
+struct Storage {
+    std::vector<std::byte> blob{};
+    std::vector<std::byte> factionBlob{};
+    ArrayView factionRows{};
+    std::array<domain::IndexEntry, domain::kIndexCapacity> index{};
+    std::array<domain::Definition, domain::kDefinitionCapacity> definitions{};
+    std::array<domain::SaleRow, domain::kSaleRowCapacity> saleRows{};
+    std::array<domain::InstalledRow, domain::kInstalledRowCapacity> installedRows{};
+    std::array<domain::TransferRule, domain::kTransferRuleCapacity> transferRules{};
+    std::size_t indexCount{};
+    std::size_t definitionCount{};
+    std::size_t saleRowCount{};
+    std::size_t installedRowCount{};
+    std::size_t transferRuleCount{};
+    /** Sale rows whose price depends on an expression, kept but never charged. */
+    std::size_t conditionalRows{};
+    /** Sale rows whose cost array did not read, kept but never charged. */
+    std::size_t unreadableRows{};
+    /** Sale rows with availability conditions. */
+    std::size_t gatedRows{};
+    /** Sale rows whose conditions did not read, bind or fit, kept but never sold. */
+    std::size_t unreadableGates{};
+    /** Definitions whose transfer array did not read, kept with no transfer rules. */
+    std::size_t unreadableTransfers{};
+
+    /** Only published prefixes are visible; extraction fully assigns each new row. */
+    void reset() noexcept {
+        blob.clear();
+        factionBlob.clear();
+        factionRows = {};
+        indexCount = 0;
+        definitionCount = 0;
+        saleRowCount = 0;
+        installedRowCount = 0;
+        transferRuleCount = 0;
+        conditionalRows = 0;
+        unreadableRows = 0;
+        gatedRows = 0;
+        unreadableGates = 0;
+        unreadableTransfers = 0;
+    }
 };
 
 /** @param blob Source bytes. @param offset Field offset. @param value Receives the field. */
@@ -105,6 +122,17 @@ read(std::span<const std::byte> blob, std::size_t offset, Value& value) noexcept
     return true;
 }
 
+/** Reads the native faction rows used by vendor definition +18. */
+[[nodiscard]] bool
+read_factions(const reader::Source& source, reader::Scratch& scratch, Storage& storage) noexcept {
+    return reader::read_tag(source, scratch, kFactionTableTag, storage.factionBlob)
+           && read_array(std::span<const std::byte>{storage.factionBlob},
+                         kFactionArrayDescriptor,
+                         kFactionRowStride,
+                         storage.factionRows)
+           && storage.factionRows.count != 0 && storage.factionRows.classId == kFactionRowClass;
+}
+
 /**
  * Reads one sale row's cost entries and whether they are its price.
  * An entry is static only with both expression arrays empty and the plain trailing word. Any other
@@ -152,6 +180,43 @@ read_sale_cost(std::span<const std::byte> blob, std::size_t at, domain::SaleRow&
 }
 
 /**
+ * Binds one sale row's availability conditions. A list that does not read, bind or fit is kept as
+ * an unreadable row, which refuses the purchase.
+ * @param conditions Loaded condition tables the expressions bind through.
+ * @param blob Whole definition blob.
+ * @param at Sale row offset inside the blob.
+ * @param value Receives the bound conditions.
+ * @param storage Pass storage counting gated and unreadable rows.
+ * @return False only when the reader's storage failed, which a later pass retries.
+ */
+[[nodiscard]] bool read_availability(const items::packages::RewardConditions& conditions,
+                                     std::span<const std::byte> blob,
+                                     std::size_t at,
+                                     domain::SaleRow& value,
+                                     Storage& storage) noexcept {
+    std::size_t count = 0;
+    items::packages::BankFailure failure = items::packages::BankFailure::none;
+    const bool readable = conditions.read_list(blob,
+                                               at + kSaleAvailabilityDescriptor,
+                                               value.availability,
+                                               count,
+                                               failure,
+                                               kSaleAvailabilityRowClass);
+    if (failure == items::packages::BankFailure::storage) {
+        return false;
+    }
+    value.availabilityUnreadable = !readable;
+    value.availabilityCount = readable ? static_cast<std::uint8_t>(count) : 0;
+    if (!readable) {
+        value.availability = {};
+        ++storage.unreadableGates;
+    } else if (count != 0) {
+        ++storage.gatedRows;
+    }
+    return true;
+}
+
+/**
  * Reads the whole installed vendor index.
  * @param source Package directory and borrowed block keys.
  * @param scratch Lock-owned block storage.
@@ -187,12 +252,14 @@ read_index(const reader::Source& source, reader::Scratch& scratch, Storage& stor
  * Reads every sale row of one definition into the flat bank.
  * A row whose cost array does not read costs that row its price, never the vendor: a purchase
  * names the row by ordinal, so the row stays in place and refuses to be bought.
+ * @param conditions Loaded condition tables the availability expressions bind through.
  * @param blob Whole definition blob.
  * @param definition Definition whose sale array was already resolved.
  * @param storage Pass storage receiving the rows.
  * @return True when every row is inside the blob and the bank holds them all.
  */
-[[nodiscard]] bool read_sale_rows(std::span<const std::byte> blob,
+[[nodiscard]] bool read_sale_rows(const items::packages::RewardConditions& conditions,
+                                  std::span<const std::byte> blob,
                                   const domain::Definition& definition,
                                   Storage& storage) noexcept {
     if (definition.saleCount > domain::kSaleRowCapacity - storage.saleRowCount) {
@@ -217,6 +284,9 @@ read_index(const reader::Source& source, reader::Scratch& scratch, Storage& stor
                               row);
         } else if (value.priceState == domain::PriceState::conditional) {
             ++storage.conditionalRows;
+        }
+        if (!read_availability(conditions, blob, at, value, storage)) {
+            return false;
         }
     }
     storage.saleRowCount += definition.saleCount;
@@ -248,15 +318,50 @@ read_index(const reader::Source& source, reader::Scratch& scratch, Storage& stor
     return true;
 }
 
+// The generated rule class is two unnamed bytes, read in the manifest's accepted-item order:
+// the accepted source bucket, then its destination.
+static_assert(sizeof(domain::TransferRule) == generated::C8080785f::kSize);
+
 /**
- * Reads one vendor definition and both of its row arrays.
+ * Reads every transfer rule of one definition into the flat bank.
+ * @param blob Whole definition blob.
+ * @param definition Definition receiving its rule count; its bank offset is already set.
+ * @param storage Pass storage receiving the rules.
+ * @return True when the array is absent, or has the rule class, fits the bank, and every rule is
+ *         inside the blob. Otherwise the definition keeps no rules and the bank is left as found.
+ */
+[[nodiscard]] bool read_transfer_rules(std::span<const std::byte> blob,
+                                       domain::Definition& definition,
+                                       Storage& storage) noexcept {
+    definition.transferRuleCount = 0;
+    ArrayView transfers{};
+    if (!read_array(blob, kTransferArrayDescriptor, sizeof(domain::TransferRule), transfers)
+        || (transfers.count != 0 && transfers.classId != generated::C8080785f::kClass)
+        || transfers.count > domain::kTransferRuleCapacity - storage.transferRuleCount) {
+        return false;
+    }
+    for (std::size_t row = 0; row < transfers.count; ++row) {
+        const std::size_t at = transfers.base + (row * sizeof(domain::TransferRule));
+        if (!read(blob, at, storage.transferRules[storage.transferRuleCount + row])) {
+            return false;
+        }
+    }
+    definition.transferRuleCount = transfers.count;
+    storage.transferRuleCount += transfers.count;
+    return true;
+}
+
+/**
+ * Reads one vendor definition and every row array it owns.
+ * @param conditions Loaded condition tables the availability expressions bind through.
  * @param source Package directory and borrowed block keys.
  * @param scratch Lock-owned block storage.
  * @param entry Index row naming the definition.
  * @param storage Pass storage receiving the definition and its rows.
  * @return True when the definition blob reads and every array ends inside it.
  */
-[[nodiscard]] bool read_definition(const reader::Source& source,
+[[nodiscard]] bool read_definition(const items::packages::RewardConditions& conditions,
+                                   const reader::Source& source,
                                    reader::Scratch& scratch,
                                    const domain::IndexEntry& entry,
                                    Storage& storage) noexcept {
@@ -293,18 +398,46 @@ read_index(const reader::Source& source, reader::Scratch& scratch, Storage& stor
     definition.interactionRowBase = interactions.base;
     definition.interactionRowClass = interactions.classId;
     definition.interactionCount = interactions.count;
+    if (!read(blob, kVendorFactionIndexOffset, definition.factionIndexRaw)) {
+        return false;
+    }
+    if (definition.factionIndexRaw < storage.factionRows.count) {
+        const std::size_t at =
+            storage.factionRows.base
+            + static_cast<std::size_t>(definition.factionIndexRaw) * kFactionRowStride;
+        const std::span<const std::byte> factions{storage.factionBlob};
+        std::uint32_t progressionIndex = 0;
+        if (!read(factions, at + kFactionHashOffset, definition.factionHash)
+            || !read(factions, at + kFactionProgressionIndexOffset, progressionIndex)
+            || definition.factionHash == 0
+            || progressionIndex > (std::numeric_limits<std::uint16_t>::max)()) {
+            return false;
+        }
+        definition.factionProgressionIndex = static_cast<std::uint16_t>(progressionIndex);
+    }
     definition.saleRowOffset = static_cast<std::uint32_t>(storage.saleRowCount);
     definition.installedRowOffset = static_cast<std::uint32_t>(storage.installedRowCount);
-    // A skipped definition must leave both banks exactly as it found them; an orphan sale row
+    definition.transferRuleOffset = static_cast<std::uint32_t>(storage.transferRuleCount);
+    // A skipped definition must leave the banks exactly as it found them; an orphan sale row
     // shifts the next definition's offset and `valid()` then rejects the whole set.
     const std::size_t saleRowsBefore = storage.saleRowCount;
     const std::size_t installedRowsBefore = storage.installedRowCount;
+    const std::size_t transferRulesBefore = storage.transferRuleCount;
+    // An unreadable transfer array costs this vendor its transfers alone, never its sales.
+    if (!read_transfer_rules(blob, definition, storage)) {
+        ++storage.unreadableTransfers;
+        core::log::writef(core::log::Channel::state,
+                          core::log::Level::warn,
+                          "ev=build_data stage=vendors result=unreadable_transfers hash=0x%08X",
+                          definition.definitionHash);
+    }
     if (!read(blob, kResetIntervalOffset, definition.resetIntervalRaw)
         || !read(blob, kResetPhaseOffset, definition.resetPhaseRaw)
-        || !read_sale_rows(blob, definition, storage)
+        || !read_sale_rows(conditions, blob, definition, storage)
         || !read_installed_rows(blob, definition, storage)) {
         storage.saleRowCount = saleRowsBefore;
         storage.installedRowCount = installedRowsBefore;
+        storage.transferRuleCount = transferRulesBefore;
         return false;
     }
     storage.definitions[storage.definitionCount] = definition;
@@ -323,18 +456,24 @@ void report(const Storage& storage, std::size_t skipped, const char* result) noe
     const int written = std::snprintf(line.data(),
                                       line.size(),
                                       "ev=build_data stage=vendors index=%zu definitions=%zu "
-                                      "sale=%zu conditional=%zu unreadable=%zu installed=%zu "
-                                      "skipped=%zu result=%s",
+                                      "sale=%zu conditional=%zu unreadable=%zu gated=%zu "
+                                      "unreadable_gates=%zu installed=%zu transfers=%zu "
+                                      "unreadable_transfers=%zu skipped=%zu result=%s",
                                       storage.indexCount,
                                       storage.definitionCount,
                                       storage.saleRowCount,
                                       storage.conditionalRows,
                                       storage.unreadableRows,
+                                      storage.gatedRows,
+                                      storage.unreadableGates,
                                       storage.installedRowCount,
+                                      storage.transferRuleCount,
+                                      storage.unreadableTransfers,
                                       skipped,
                                       result);
     if (written > 0) {
-        const bool clean = storage.indexCount != 0 && skipped == 0 && storage.unreadableRows == 0;
+        const bool clean = storage.indexCount != 0 && skipped == 0 && storage.unreadableRows == 0
+                           && storage.unreadableTransfers == 0;
         core::log::write(core::log::Channel::state,
                          clean ? core::log::Level::info : core::log::Level::warn,
                          {line.data(), static_cast<std::size_t>(written)});
@@ -344,12 +483,21 @@ void report(const Storage& storage, std::size_t skipped, const char* result) noe
 } // namespace
 
 /** Extracts and publishes the vendor catalog from the installed packages. */
-bool build(const reader::Source& source, reader::Scratch& scratch) noexcept {
+bool build(const reader::Source& source,
+           reader::Scratch& scratch,
+           const items::packages::RewardConditions& conditions) noexcept {
     if (state::build_data::vendor_catalog_ready()) {
         return true;
     }
     static Storage storage{};
     storage.reset();
+    if (!read_factions(source, scratch, storage)) {
+        // A missing faction table removes reputation links, not ordinary vendor sales.
+        storage.factionRows = {};
+        core::log::write(core::log::Channel::state,
+                         core::log::Level::warn,
+                         "ev=build_data stage=vendors result=factions_unavailable");
+    }
     if (!read_index(source, scratch, storage)) {
         report(storage, 0, "index");
         return false;
@@ -359,7 +507,7 @@ bool build(const reader::Source& source, reader::Scratch& scratch) noexcept {
     std::size_t skipped = 0;
     for (std::size_t row = 0; row < storage.indexCount; ++row) {
         const domain::IndexEntry entry = storage.index[row];
-        if (read_definition(source, scratch, entry, storage)) {
+        if (read_definition(conditions, source, scratch, entry, storage)) {
             continue;
         }
         ++skipped;
@@ -376,7 +524,8 @@ bool build(const reader::Source& source, reader::Scratch& scratch) noexcept {
         std::span(storage.index).first(storage.indexCount),
         std::span(storage.definitions).first(storage.definitionCount),
         std::span(storage.saleRows).first(storage.saleRowCount),
-        std::span(storage.installedRows).first(storage.installedRowCount));
+        std::span(storage.installedRows).first(storage.installedRowCount),
+        std::span(storage.transferRules).first(storage.transferRuleCount));
     report(storage, skipped, published ? "ok" : "publish");
     return published;
 }
