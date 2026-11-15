@@ -73,6 +73,8 @@ const char* event_name(EventKind kind) noexcept {
         return "squad slot count rose";
     case EventKind::entityDied:
         return "squad alive count fell";
+    case EventKind::squadMemberLost:
+        return "squad member lost";
     case EventKind::sceneFinished:
         return "authored scene finished";
     case EventKind::objectiveProgress:
@@ -85,6 +87,10 @@ const char* event_name(EventKind kind) noexcept {
         return "session left";
     case EventKind::playerTrigger:
         return "player trigger";
+    case EventKind::integration:
+        return "integration";
+    case EventKind::engagementState:
+        return "engagement state";
     case EventKind::cinematicStarted:
         return "cinematic started";
     case EventKind::actorPathState:
@@ -105,6 +111,8 @@ const char* event_name(EventKind kind) noexcept {
         return "object interacted";
     case EventKind::ghostLinkState:
         return "ghost link state";
+    case EventKind::hopOnState:
+        return "hop-on state";
     case EventKind::cinematicSkipRequested:
         return "cinematic skip requested";
     case EventKind::cinematicTerminated:
@@ -142,6 +150,8 @@ const char* output_status_name(OutputStatus status) noexcept {
         return "pending";
     case OutputStatus::waitingForEpoch:
         return "waiting for epoch";
+    case OutputStatus::waitingForPublisher:
+        return "waiting for the public link";
     case OutputStatus::noLayout:
         return "no roster layout";
     case OutputStatus::noGroups:

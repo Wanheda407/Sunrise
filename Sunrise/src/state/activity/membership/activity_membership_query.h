@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include "../definition.h"
 #include "member_directory.h"
@@ -131,6 +132,20 @@ void note_declared_initial_region(std::uint64_t sessionId, std::int32_t region) 
 /** Records the spawn set the attached mission program declared with its initial state. */
 void note_declared_spawn_set(std::uint64_t sessionId, std::uint32_t spawnSetHash) noexcept;
 
+/** Records the objects the attached mission program keeps out of every seed it adopts. */
+void note_declared_seed_omissions(
+    std::uint64_t sessionId,
+    std::span<const activity::mission::MissionSeedOmission> omissions) noexcept;
+
+/**
+ * Copies the declared seed omissions of one joined session.
+ * @param output Caller storage of at least kMissionSeedOmitCapacity entries.
+ * @return The copied count; zero while no program declared any or the output is too small.
+ */
+[[nodiscard]] std::size_t
+declared_seed_omissions(std::uint64_t sessionId,
+                        std::span<activity::mission::MissionSeedOmission> output) noexcept;
+
 /** Holds or releases the mission program's spawn hold for one joined session. */
 void set_program_spawn_hold(std::uint64_t sessionId, bool held) noexcept;
 
@@ -151,6 +166,18 @@ void set_program_spawn_hold(std::uint64_t sessionId, bool held) noexcept;
  * @return True while a host-named teleport is armed and unspent.
  */
 [[nodiscard]] bool host_teleport_armed(std::uint64_t sessionId) noexcept;
+
+/** @return True from the arm of a host-named teleport until the client's spawn retires it. */
+[[nodiscard]] bool host_teleport_in_flight(std::uint64_t sessionId) noexcept;
+
+/**
+ * Raises an armed host teleport to its spawn state once the client holds the region it names.
+ * The client refuses the spawn until it has applied a roster whose lifetime state passes the spawn
+ * gate, so the caller raises only after that roster is delivered.
+ * @param sessionId Joined activity session the teleport moved.
+ * @return True when the state changed, so a membership body owes it to the client.
+ */
+[[nodiscard]] bool raise_host_teleport_spawn(std::uint64_t sessionId) noexcept;
 
 /**
  * Prepares a membership-revision advance so an already-applied snapshot can be corrected.

@@ -21,6 +21,8 @@ bool exchange(Vm& first, Vm& second) noexcept {
                squadPopulations,
                ghostLevels,
                ghostLevelCount,
+               objectiveLevels,
+               objectiveLevelCount,
                arena,
                identity,
                definitions,
@@ -46,6 +48,8 @@ bool exchange(Vm& first, Vm& second) noexcept {
                initialStateSpawnSet,
                initialStateOmissions,
                initialStateOmissionCount,
+               seedOmissions,
+               seedOmissionCount,
                arenaBytesAfterClose,
                lastError,
                state,
@@ -62,6 +66,8 @@ bool exchange(Vm& first, Vm& second) noexcept {
                         squadPopulations,
                         ghostLevels,
                         ghostLevelCount,
+                        objectiveLevels,
+                        objectiveLevelCount,
                         arena,
                         identity,
                         definitions,
@@ -87,6 +93,8 @@ bool exchange(Vm& first, Vm& second) noexcept {
                         initialStateSpawnSet,
                         initialStateOmissions,
                         initialStateOmissionCount,
+                        seedOmissions,
+                        seedOmissionCount,
                         arenaBytesAfterClose,
                         lastError,
                         state,
@@ -111,7 +119,10 @@ bool exchange(Vm& first, Vm& second) noexcept {
     return true;
 }
 
-/** Copies the attempt and the observations State does not hold: ghost levels and peers. */
+/**
+ * Copies the attempt and the observations State does not hold: ghost levels, objective counters
+ * and offers, and peers.
+ */
 bool copy_inputs(const Vm& source, Vm& prepared) noexcept {
     const Impl& from = VmAccess::get(source);
     Impl& to = VmAccess::get(prepared);
@@ -121,6 +132,8 @@ bool copy_inputs(const Vm& source, Vm& prepared) noexcept {
     to.attempt = from.attempt;
     to.ghostLevels = from.ghostLevels;
     to.ghostLevelCount = from.ghostLevelCount;
+    to.objectiveLevels = from.objectiveLevels;
+    to.objectiveLevelCount = from.objectiveLevelCount;
     to.peers = from.peers;
     to.peerCount = from.peerCount;
     return true;

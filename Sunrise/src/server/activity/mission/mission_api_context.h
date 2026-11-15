@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 #include "../../../middleware/bap/activity_message/incident.h"
+#include "../../../middleware/bap/activity_message/scriptable_auth_body.h"
 #include "../../../state/activity/membership/definition.h"
 #include "../../../state/activity/mission/definition.h"
 #include "mission_api_types.h"
@@ -30,12 +32,33 @@ inline constexpr ValueSpec kExactObjectSelector[]{{.kind = ValueKind::selector,
                                                    .ref = "mission.Slot",
                                                    .slot = kExactObject,
                                                    .handleAccepted = true}};
+/** The object's own state-machine position lane, applied to the live object in place. */
+inline constexpr ValueSpec kActivatePositionFields[]{
+    {.name = "value",
+     .kind = ValueKind::number,
+     .note = "0 to 1; the object's graph owns the bins"},
+    {.name = "snap",
+     .kind = ValueKind::boolean,
+     .optional = true,
+     .fallback = default_boolean(true),
+     .note = "jump to the value instead of blending"},
+};
 inline constexpr ValueSpec kActivateObjectsArguments[]{
     {.name = "slots",
      .kind = ValueKind::list,
      .element = kExactObjectSelector,
      .note = "dense list; a slot may appear once; grouped into one request per object"},
     kActiveArgument,
+    {.name = "capture_plate",
+     .kind = ValueKind::boolean,
+     .optional = true,
+     .fallback = default_boolean(false),
+     .note = "adds the capture-plate component Auth; it changes no plate field"},
+    {.name = "position",
+     .kind = ValueKind::table,
+     .optional = true,
+     .fields = kActivatePositionFields,
+     .note = "sets the object's state-machine position lane at its current generation"},
 };
 inline constexpr ValueSpec kRequestKeyList[]{
     {.kind = ValueKind::list, .element = kRequestKey, .note = "one key per object group"}};
@@ -60,6 +83,13 @@ inline constexpr ValueSpec kSlotLookupArguments[]{
 inline constexpr ValueSpec kHoldSpawnArguments[]{
     {.name = "active", .kind = ValueKind::boolean, .note = "true holds the spawn, false releases"},
 };
+inline constexpr ValueSpec kActivityFlagArguments[]{
+    {.name = "key",
+     .kind = ValueKind::integer,
+     .bound = between(1, (std::numeric_limits<std::uint32_t>::max)()),
+     .note = "the id an activity_flag condition tests"},
+    {.name = "raised", .kind = ValueKind::boolean, .note = "false lowers the flag"},
+};
 inline constexpr ValueSpec kSendIncidentArguments[]{
     {.name = "target",
      .kind = ValueKind::integer,
@@ -81,6 +111,11 @@ inline constexpr ValueSpec kSelectStateOptionFields[]{
      .optional = true,
      .fallback = default_boolean(false),
      .note = "ends the map props captured from the old state before the move"},
+    {.name = "spawn_set_hash",
+     .kind = ValueKind::integer,
+     .optional = true,
+     .bound = between(1, kUint32Maximum - 1),
+     .note = "the authored spawn set this arrival uses instead of the declared one"},
 };
 inline constexpr ValueSpec kSelectStateArguments[]{
     {.name = "state",
@@ -137,6 +172,52 @@ inline constexpr ValueSpec kModConfigHandle[]{{.kind = ValueKind::handle, .ref =
 inline constexpr ValueSpec kTimersHandle[]{{.kind = ValueKind::handle, .ref = "timers"}};
 inline constexpr ValueSpec kVariablesHandle[]{{.kind = ValueKind::handle, .ref = "variables"}};
 
+// The Director's public-event schedule for one site, evaluated by the runtime at the host clock.
+inline constexpr ValueSpec kPublicEventScheduleArguments[]{
+    {.name = "site",
+     .kind = ValueKind::integer,
+     .bound = uint32_range(),
+     .note = "roster key of the site"},
+    {.name = "now",
+     .kind = ValueKind::integer,
+     .optional = true,
+     .fallback = default_integer(0),
+     .note = "Unix seconds to evaluate at; zero or absent reads the host clock"},
+};
+inline constexpr ValueSpec kPublicEventScheduleFields[]{
+    {.name = "state", .kind = ValueKind::string, .note = "incoming or active"},
+    {.name = "until_start",
+     .kind = ValueKind::integer,
+     .note = "seconds to the start; zero while active"},
+    {.name = "until_finish",
+     .kind = ValueKind::integer,
+     .note = "seconds to the end of the map window"},
+    {.name = "slot_start", .kind = ValueKind::integer, .note = "Unix seconds"},
+    {.name = "start", .kind = ValueKind::integer, .note = "Unix seconds"},
+    {.name = "finish", .kind = ValueKind::integer, .note = "Unix seconds"},
+    {.name = "slot", .kind = ValueKind::integer},
+    {.name = "row", .kind = ValueKind::integer, .note = "one-based schedule row"},
+    {.name = "selected", .kind = ValueKind::boolean, .note = "the slot's pick is this site"},
+    {.name = "site",
+     .kind = ValueKind::integer,
+     .optional = true,
+     .note = "the picked site's roster key"},
+    {.name = "node",
+     .kind = ValueKind::integer,
+     .optional = true,
+     .note = "the picked site's map node"},
+    {.name = "rally",
+     .kind = ValueKind::integer,
+     .optional = true,
+     .note = "the picked site's rally key"},
+};
+inline constexpr ValueSpec kPublicEventSchedule[]{{.kind = ValueKind::table,
+                                                   .optional = true,
+                                                   .fields = kPublicEventScheduleFields,
+                                                   .note =
+                                                       "nil before the table is extracted or for a "
+                                                       "site no row lists"}};
+
 /** Members of the mission context, in __index order. */
 inline constexpr MemberSpec kContextMembers[]{
     field("sdk_build_id", kString, "sha256:<64 hex>"),
@@ -149,6 +230,14 @@ inline constexpr MemberSpec kContextMembers[]{
     field("lifetime", kLifetimeHandle),
     field("attempt_generation", kDecimal),
     field("mission_complete", kBoolean, "true after complete_mission was accepted"),
+    field(
+        "host_unix_seconds", kInteger, "the host wall clock in Unix seconds, read at each access"),
+    {.name = "public_event_schedule",
+     .kind = MemberKind::query,
+     .call = CallForm::named,
+     .arguments = kPublicEventScheduleArguments,
+     .returns = kPublicEventSchedule,
+     .note = "the Director's schedule of one public-event site, as the client computes it"},
     {.name = "complete_mission",
      .kind = MemberKind::request,
      .call = CallForm::named,
@@ -195,6 +284,13 @@ inline constexpr MemberSpec kContextMembers[]{
      .returns = kRequestKey,
      .effect = "mission.send_incident",
      .note = "sends one msg-19 activity incident to the client, as the activity host would"},
+    {.name = "set_activity_flag",
+     .kind = MemberKind::request,
+     .call = CallForm::named,
+     .arguments = kActivityFlagArguments,
+     .returns = kRequestKey,
+     .effect = "mission.set_activity_flag",
+     .note = "raises or lowers one id every participation record lists"},
     {.name = "select_state",
      .kind = MemberKind::request,
      .call = CallForm::positional,
@@ -209,6 +305,12 @@ inline constexpr MemberSpec kContextMembers[]{
      .returns = kRequestKey,
      .effect = "mission.restart_checkpoint",
      .note = "arms a hard wipe at a spawn set, or releases one with release_request"},
+    {.name = "random",
+     .kind = MemberKind::maker,
+     .call = CallForm::positional,
+     .returns = kNumber,
+     .note = "draws a server random number in [0, 1); errors if entropy is unavailable; "
+             "store choices with set_variable when they must survive reload"},
     {.name = "set_phase",
      .kind = MemberKind::update,
      .call = CallForm::positional,
@@ -352,16 +454,23 @@ inline constexpr MemberSpec kPeerMembers[]{
     field("join_identity", kDecimal),
 };
 
-// The type of cohort.alive_count.
+// The types of cohort.alive_count and cohort.observed_alive.
 inline constexpr ValueSpec kCohortAlive[]{
     {.kind = ValueKind::integer, .optional = true, .note = "nil while any squad is unknown"}};
+inline constexpr ValueSpec kCohortObservedAlive[]{
+    {.kind = ValueKind::boolean, .optional = true, .note = "nil while any squad is unknown"}};
 
 /** Members of one cohort. A squad with a queued placement counts as unknown. */
 inline constexpr MemberSpec kCohortMembers[]{
     field("alive_count", kCohortAlive),
     field("observed_full", kBoolean, "every squad was seen at full strength"),
+    field("observed_alive", kCohortObservedAlive, "a member of any squad was seen alive"),
     field("cleared", kBoolean, "seen full, and now all dead"),
     field("size", kInteger),
+    field("members",
+          kInteger,
+          "members the squads hold in this attempt: their placed counts, more when more were seen, "
+          "or the authored members of a squad with no counts"),
 };
 
 // --- context.sdk makers and enums ---------------------------------------------------------------

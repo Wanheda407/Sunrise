@@ -1,7 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <limits>
+
+#include "../mission/definition.h"
 
 namespace sunrise::state::activity::membership {
 
@@ -40,6 +43,12 @@ inline constexpr std::int8_t kHostTeleportArmedState = 1;
  * reads 3. Step 0 refuses to re-latch on 3, so holding it there is inert once the spawn has run.
  */
 inline constexpr std::int8_t kHostTeleportSpawnState = 3;
+/**
+ * Teleport state published while a latched move is under way and its spawn is not yet due.
+ * Step 0 does not latch on it, so an activity client that starts during the move (the public
+ * link's, which reads the same player block) cannot run the move a second time.
+ */
+inline constexpr std::int8_t kHostTeleportMovingState = 0;
 /** The client resets its teleport byte to zero when the spawn call finishes. */
 inline constexpr std::int8_t kClientTeleportResetState = 0;
 /** The mirrored 10-bit slice-set field reaches logical 1022. */
@@ -203,6 +212,11 @@ struct MembershipState final {
     std::int32_t declaredInitialRegion{kAbsentRegionIndex};
     /** Spawn set the attached mission program declared with that state; zero when none. */
     std::uint32_t declaredSpawnSetHash{};
+    /** Objects the attached program keeps out of every seed, the adopted arrival seed included. */
+    std::array<mission::MissionSeedOmission, mission::kMissionSeedOmitCapacity>
+        declaredSeedOmissions{};
+    /** Valid entries in declaredSeedOmissions, copied with the attached VM ownership. */
+    std::uint8_t declaredSeedOmissionCount{};
     /** The mission program holds the spawn: the player has no body until it releases. */
     bool programSpawnHold{};
     std::uint32_t revision{};

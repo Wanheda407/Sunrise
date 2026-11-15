@@ -29,10 +29,9 @@
 #include "mission_script_vm.h"
 
 namespace sunrise::server::activity::mission {
-namespace {
 
 /** True when the link, the SDK view and the world view still match what the instance bound. */
-[[nodiscard]] bool still_exact(const RuntimeInstance& instance) noexcept {
+bool still_exact(const RuntimeInstance& instance) noexcept {
     server::bap::ActivityLinkView link{};
     lua_vm::WorldGenerationIdentity worldGeneration{};
     return server::bap::activity_link_view(
@@ -49,6 +48,8 @@ namespace {
                   == instance.view.activityClientGeneration
            && sdk_bridge::world_generation_identity(instance.worldView, worldGeneration);
 }
+
+namespace {
 
 /**
  * Rebuilds one open program view for its exact owning ActivityClient generation.
@@ -107,6 +108,7 @@ namespace {
     if (sourceChanged) {
         // The next native report establishes its own baseline, not a delta from another client.
         reset_shared_observations(instance);
+        publish_objective_levels(instance);
         instance.activeRegion = link.sliceSetIndex;
     }
     mission_state::Snapshot snapshot{};
@@ -114,6 +116,7 @@ namespace {
         return false;
     }
     accept_mission_state(instance, snapshot);
+    note_owner_readiness();
     return true;
 }
 
@@ -398,6 +401,18 @@ enum class InitialStateGate : std::uint8_t {
     }
     // The first read records the current peers, so a reattach never replays them.
     push_session_roster_edges(instance);
+    // A player who spawns straight into a zone adopts its seed before the program's first
+    // frame, so the program-wide omissions reach the seed path ahead of any script request.
+    std::array<sdk::MissionSeedOmission, sdk::kMissionSeedOmitCapacity> seedOmissions{};
+    std::size_t seedOmissionCount = 0;
+    if (!lua_vm::program_seed_omissions(instance.vm, seedOmissions, seedOmissionCount)) {
+        lua_vm::fault(instance.vm, "program seed_omit list could not be read");
+        instance.programStatus = ProgramStatus::programError;
+        note_vm_status(instance, "open", "seed_omit_refused");
+        return AttachResult::programError;
+    }
+    state::activity::membership::note_declared_seed_omissions(
+        instance.view.binding.sessionId, std::span(seedOmissions).first(seedOmissionCount));
     instance.initialStateDeclared =
         lua_vm::initial_state_region(instance.vm, instance.initialStateRegion);
     if (instance.initialStateDeclared) {
@@ -411,6 +426,7 @@ enum class InitialStateGate : std::uint8_t {
         state::activity::membership::note_declared_spawn_set(instance.view.binding.sessionId,
                                                              spawnSet);
     }
+    note_owner_readiness();
     if (!bind_mission_state(instance, now)) {
         instance.programStatus = ProgramStatus::programError;
         return AttachResult::programError;

@@ -373,10 +373,13 @@ void note_vm_status(RuntimeInstance& instance,
 /** Native Sense levels cannot cross an attempt or ActivityClient generation boundary. */
 void clear_sense_levels(RuntimeInstance& instance) noexcept {
     instance.triggerOccupancy = {};
+    instance.engagementObservations = {};
     instance.squadObservations = {};
     instance.squadShadows = {};
     instance.squadShadowAtCapacity = false;
     instance.ghostObservations = {};
+    instance.effectObservations = {};
+    instance.stagedRequests = {};
     instance.damageObservations = {};
     instance.combatantDamageObservations = {};
     instance.entityDamageObservations = {};
@@ -422,10 +425,12 @@ void clear_instance(RuntimeInstance& instance, bool clearPending) noexcept {
     instance.lastMissionSequence = 0;
     instance.missionPhase = 0;
     instance.missionStateRevision = 0;
+    instance.missionRecordRevision = 0;
     instance.activityStateRevision = 0;
     instance.durableIntentSequence = 0;
     instance.durableHostOutputRevision = 0;
     instance.expectedScriptableRevision = 0;
+    instance.armedStateRevision = 0;
     instance.deliveryDeadline = 0;
     instance.firstIntentAttempt = 0;
     instance.pendingTimerEvent = {};
@@ -485,6 +490,7 @@ void accept_mission_state(RuntimeInstance& instance,
     if (instance.attempt.generation != snapshot.state.attempt.generation) {
         clear_sense_levels(instance);
         reset_member_observations(instance);
+        publish_objective_levels(instance);
         // Player life is kept: the client sends only changed fields and never resends the region.
         instance.fireteamLifePublished = false;
         instance.timerPending = false;
@@ -540,6 +546,7 @@ void accept_compare_fields(RuntimeInstance& instance,
                            const mission_state::Snapshot& snapshot) noexcept {
     instance.attempt = snapshot.state.attempt;
     instance.missionStateRevision = snapshot.state.revision;
+    instance.missionRecordRevision = snapshot.recordRevision;
     instance.lastMissionSequence = snapshot.state.inputSequence;
     instance.activityStateRevision = snapshot.activityStateRevision;
     instance.missionPhase = snapshot.state.phase;

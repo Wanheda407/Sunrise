@@ -1,11 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
 #include "../../content/packages/schema/generated/tag_classes_808062.h"
+#include "../../content/packages/schema/generated/tag_layout_808094_1.h"
 #include "../../encoding/bit_writer.h"
 #include "activity_patch_epoch_parser.h"
 #include "definition.h"
@@ -91,6 +93,52 @@ valid_authored_scene_dependencies(const AuthoredSceneDependencies& value) noexce
 inline constexpr std::size_t kAuthOverrideByteCapacity = (53'150U + 7U) / 8U;
 /** Highest lifetime state inside the client's jump table. */
 inline constexpr std::uint8_t kMaximumLifetimeState = 10;
+/** Activity flags one participation record lists, the size of the client's flag array. */
+inline constexpr std::size_t kActivityFlagCapacity =
+    std::tuple_size_v<decltype(generated::C808094e1::unk4)>;
+
+/** One requested flag change; `raised` false lowers the key. A zero key is no change. */
+struct ActivityFlagChange final {
+    std::uint32_t key{};
+    bool raised{};
+    bool operator==(const ActivityFlagChange&) const = default;
+};
+
+/**
+ * Raised activity flags, in the order each was raised. Every participation record lists them,
+ * and the client's activity-flag conditions test the interacting player's list.
+ */
+struct ActivityFlags final {
+    std::array<std::uint32_t, kActivityFlagCapacity> keys{};
+    std::uint8_t count{};
+    bool operator==(const ActivityFlags&) const = default;
+};
+
+/** Applies one change. @return False for a zero key or a new key that does not fit. */
+[[nodiscard]] inline bool apply_activity_flag(ActivityFlags& flags,
+                                              const ActivityFlagChange& change) noexcept {
+    if (change.key == 0 || flags.count > flags.keys.size()) {
+        return false;
+    }
+    const auto raised = std::span(flags.keys).first(flags.count);
+    const auto found = std::find(raised.begin(), raised.end(), change.key);
+    if (found != raised.end()) {
+        if (!change.raised) {
+            std::copy(found + 1, raised.end(), found);
+            flags.keys[--flags.count] = 0;
+        }
+        return true;
+    }
+    if (!change.raised) {
+        return true;
+    }
+    if (flags.count == flags.keys.size()) {
+        return false;
+    }
+    flags.keys[flags.count++] = change.key;
+    return true;
+}
+
 /** The lifetime field stores its value plus one in four bits. */
 inline constexpr std::uint8_t kLifetimeWidth = 4;
 inline constexpr std::uint32_t kLifetimeBias = 1;
@@ -107,6 +155,8 @@ inline constexpr std::uint32_t kAbsentSpawnSetHash = kEmptyNameHash;
 struct Grant final {
     std::uint8_t bubble{};
     std::uint16_t token{};
+    /** Releases the bubble the client holds under `token` instead of granting it. */
+    bool release{};
 };
 
 /**
@@ -219,6 +269,8 @@ struct Snapshot final {
     Grant grant{};
     /** Message 12's member record key. Zero leaves every type-13 block inert. */
     std::uint64_t playerKey{};
+    /** Activity-clock base in native ticks; directive epochs use the same origin. */
+    std::uint64_t activityTime{};
     /** Compatibility revision used by groups without an explicit per-key value. */
     std::uint8_t stateSequence{};
     /** The participation record's region index. Its `+8` latch needs it. */
@@ -226,6 +278,8 @@ struct Snapshot final {
     std::uint32_t spawnSetHash{};
     std::uint32_t spawnSliceSet{};
     std::uint8_t lifetime{};
+    /** Flags every participation record lists. */
+    ActivityFlags activityFlags{};
     bool hasGrant{};
     bool hasRegion{};
     bool hasSpawnOverride{};
@@ -257,7 +311,7 @@ struct Snapshot final {
                                              std::span<std::byte> output,
                                              std::size_t& written) noexcept;
 
-/** Bits before the enable latch, no bubble block: 8 hardwipe, 128 epoch, 1 present, 64 token. */
+/** Bits before the enable latch: 8 hardwipe, 128 epoch, 1 absent grant, 64 clock ticks. */
 inline constexpr std::size_t kLatchBitWithoutGrant = 201;
 /** A bubble block adds the 65-bit authority mask, two head bits, three per element, one token. */
 inline constexpr std::size_t kBubbleBlockBits =
@@ -266,8 +320,17 @@ inline constexpr std::size_t kBubbleBlockBits =
 inline constexpr std::uint8_t kEpochWidth = 64;
 /** The unchecked hardwipe token is one byte, before the patch epoch. */
 inline constexpr std::uint8_t kHardwipeWidth = 8;
-/** The unchecked activity token follows the bubble block. */
-inline constexpr std::uint8_t kActivityTokenWidth = 64;
+/** The activity-clock base follows the optional bubble block. */
+inline constexpr std::uint8_t kActivityTimeWidth = 64;
+
+/**
+ * Compares encoded rosters without treating clock advancement as a content change.
+ * @param left Previously encoded body, borrowed for the comparison.
+ * @param right Newly encoded body, borrowed for the comparison.
+ * @return True for equal content apart from time; grant-bearing or short bodies return false.
+ */
+[[nodiscard]] bool same_roster_content(std::span<const std::byte> left,
+                                       std::span<const std::byte> right) noexcept;
 /** Changed authority tokens use the schema's unsigned 16-bit field. */
 inline constexpr std::uint8_t kGrantTokenWidth = 16;
 /** Every presence bit and every loop continuation bit is one bit wide. */

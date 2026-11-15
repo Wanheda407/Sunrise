@@ -12,6 +12,8 @@
 #include "mission_script_catalog_sdk.h"
 #include "mission_script_ghost_sense.h"
 #include "mission_script_manifest_sdk.h"
+#include "mission_script_objective_sense.h"
+#include "mission_script_squad_sense.h"
 #include "mission_script_world_sdk.h"
 
 namespace sunrise::server::activity::mission::lua_vm {
@@ -59,6 +61,10 @@ struct ProgramIdentity final {
     std::uint32_t definitionHash{};
     /** The player key the bound link's message 5 binds; the client matches it on its own datum. */
     std::uint64_t playerKey{};
+    /** Session generation whose message-5 clock directive epochs count on. */
+    std::uint64_t sessionId{};
+    /** Exact allocation generation; prevents reusing a retired session's clock. */
+    std::uint64_t sessionCreatedRevision{};
     /** Id of the mod that supplied the controller; empty for a base or generated script. */
     std::array<char, state::mods::kIdCapacity> modId{};
     /** Reads `context.mod_config`; null leaves every entry nil. */
@@ -74,6 +80,8 @@ struct SquadDefinition final {
     std::string_view id{};
     std::string_view name{};
     std::uint32_t nativeRow{};
+    /** Catalog row of the squad's authored type-1 slot. */
+    std::uint32_t slotRow{};
     std::uint32_t localRow{};
     std::size_t memberCount{};
 };
@@ -104,6 +112,8 @@ struct SlotDefinition final {
     std::uint32_t senseSchema{};
     std::uint32_t authSchema{};
     std::uint32_t flags{};
+    /** Runtime-extracted writable object channels; zero when unverified. */
+    std::uint8_t objectChannelCount{};
     /** FNV-1 of the slot name, the hash the packages key the slot by. */
     std::uint32_t nameHash{};
     /** Slice-set hash of the object's bubble in this scenario, or zero when unknown. */
@@ -386,12 +396,16 @@ using ResolveActivityBindingLocator = bool (*)(const void* context,
                                                ActivityBindingLocatorDefinition& output) noexcept;
 using DefinitionCount = std::size_t (*)(const void* context) noexcept;
 
-/** Exact authored task group with its objective's native ClientRef. */
+/** Exact authored task group with its objective's native ClientRef and its task bounds. */
 struct CombatObjectiveGroupDefinition final {
     std::uint32_t slotRow{};
     std::uint32_t groupIndex{};
     std::uint32_t registryKey{};
     std::uint16_t slotIndex{};
+    std::uint32_t taskCount{};
+    std::array<state::activity_sdk::format::CombatTaskBounds,
+               state::activity_sdk::format::kCombatTaskCapacity>
+        tasks{};
 };
 
 /** Native SDK/live projection used by the sandbox; no borrowed pointer is script-visible. */
@@ -408,6 +422,14 @@ struct DefinitionApi final {
     bool (*resolveActorAbilityTarget)(const void* context,
                                       std::uint32_t slotRow,
                                       std::uint32_t selectorIndex) noexcept {};
+    /** True when the slot's actor or squad members' behaviour program holds the temperament. */
+    bool (*resolveActorTemperament)(const void* context,
+                                    std::uint32_t slotRow,
+                                    std::uint32_t id) noexcept {};
+    /** True when the slot's actor has the channel as a mission.ActorChannel row. */
+    bool (*resolveActorChannel)(const void* context,
+                                std::uint32_t slotRow,
+                                std::uint32_t nameHash) noexcept {};
     bool (*resolveActorProgramSource)(const void* context,
                                       std::uint32_t slotRow,
                                       std::uint32_t& squadRow) noexcept {};
@@ -563,6 +585,9 @@ void publish_attempt(Vm& vm, state::activity::mission::AttemptState attempt) noe
 /** Copies the retained Ghost-link levels so a reloaded program can re-read them. */
 void publish_ghost_levels(Vm& vm, std::span<const GhostLinkRow> levels) noexcept;
 
+/** Copies the retained objective task counters so a callback can read any objective's. */
+void publish_objective_levels(Vm& vm, std::span<const ObjectiveLevelRow> levels) noexcept;
+
 /** Copies durable native population facts before any callback reads a cohort. */
 [[nodiscard]] bool publish_populations(
     Vm& vm, std::span<const state::activity::mission::SquadPopulation> populations) noexcept;
@@ -589,6 +614,11 @@ void publish_ghost_levels(Vm& vm, std::span<const GhostLinkRow> levels) noexcept
 initial_state_omissions(const Vm& vm,
                         std::span<state::activity::mission::MissionSeedOmission> output,
                         std::size_t& count) noexcept;
+/** Copies the objects program.seed_omit keeps out of every adopted seed; count may be zero. */
+[[nodiscard]] bool
+program_seed_omissions(const Vm& vm,
+                       std::span<state::activity::mission::MissionSeedOmission> output,
+                       std::size_t& count) noexcept;
 /** Copies the oldest committed action without consuming it. */
 [[nodiscard]] bool pending_intent(const Vm& vm, Intent& output) noexcept;
 /** Copies the complete ordered outbox without consuming an action. */
@@ -612,7 +642,7 @@ void close(Vm& vm) noexcept;
 
 /** Exchanges prepared states only between callbacks; Lua ownership follows each moved arena. */
 [[nodiscard]] bool exchange(Vm& first, Vm& second) noexcept;
-/** Copies the attempt, ghost levels and peers into a prepared VM. */
+/** Copies the attempt, ghost levels, objective counters and offers, and peers into a new VM. */
 [[nodiscard]] bool copy_inputs(const Vm& source, Vm& prepared) noexcept;
 /** True only for a mod whose file successfully loaded in this VM. */
 [[nodiscard]] bool uses_mod(const Vm& vm, std::string_view modId) noexcept;
